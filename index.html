@@ -1990,18 +1990,18 @@
                           <div style={{ fontSize: 10, letterSpacing: 3, color: "#5a86a8", marginBottom: 2 }}>RACE CLOCK</div>
                           <div style={{ fontFamily: "'Bebas Neue'", fontSize: 52, letterSpacing: 4, color: "#00aeef", lineHeight: 1 }}>{formatTime(spectatorClockMs || liveRace.clockMs || 0)}</div>
                         </div>
-                        {/* Live GPS Map */}
+                        {/* Live GPS Map — always rendered so the dedicated listener can populate markers immediately */}
                         {(() => {
                           const wps = liveRace.waypoints || [];
                           const hasGps = rankedWatchAthletes.some(a => a.gps);
-                          if (!hasGps && wps.length === 0) return null;
                           return (
                             <div style={{ marginBottom: 16, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(74,222,128,0.3)" }}>
                               <div style={{ fontSize: 10, letterSpacing: 3, color: "#4ade80", padding: "8px 12px", background: "#0c2240" }}>📍 LIVE GPS MAP</div>
                               <div ref={el => {
                                 if (!el || leafletMapRef.current) return;
+                                const firstGps = rankedWatchAthletes.find(a => a.gps);
                                 const center = wps[0] ? [wps[0].lat, wps[0].lng]
-                                  : rankedWatchAthletes.find(a => a.gps) ? [rankedWatchAthletes.find(a => a.gps).gps.lat, rankedWatchAthletes.find(a => a.gps).gps.lng]
+                                  : firstGps ? [firstGps.gps.lat, firstGps.gps.lng]
                                   : [37.7749, -122.4194];
                                 const map = L.map(el, { zoomControl: true, attributionControl: false }).setView(center, 15);
                                 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
@@ -2012,8 +2012,21 @@
                                   L.circleMarker([wp.lat, wp.lng], { radius: 8, color: "#4ade80", fillColor: "#4ade80", fillOpacity: 0.3, weight: 2 })
                                     .bindTooltip(wp.label, { permanent: false }).addTo(map);
                                 });
+                                // Seed markers for any athletes already reporting GPS
+                                rankedWatchAthletes.forEach((ath, idx) => {
+                                  if (!ath.gps) return;
+                                  const pos = [ath.gps.lat, ath.gps.lng];
+                                  const markerId = ath.id || idx;
+                                  const curSeg = (ath.splits || []).findIndex(s => s === null);
+                                  const col = segColors[curSeg === -1 ? SEGMENTS.length - 1 : curSeg] || "#00aeef";
+                                  leafletMarkersRef.current[markerId] = L.circleMarker(pos, { radius: 10, color: col, fillColor: col, fillOpacity: 0.8, weight: 2 })
+                                    .bindTooltip(ath.name || `Athlete ${idx + 1}`, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
+                                    .addTo(map);
+                                });
                                 leafletMapRef.current = map;
+                                setTimeout(() => map.invalidateSize(), 200);
                               }} style={{ height: 220 }} />
+                              {!hasGps && <div style={{ textAlign: "center", padding: "8px", fontSize: 10, color: "#3a6080", background: "#071829" }}>Waiting for athlete GPS…</div>}
                             </div>
                           );
                         })()}
