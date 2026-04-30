@@ -251,6 +251,40 @@
           return () => clearInterval(id);
         }, [liveRace]);
 
+        // Dedicated GPS listener — updates Leaflet markers directly without React re-render
+        useEffect(() => {
+          if (!liveRace || view !== "watch") {
+            if (gpsListenerRef.current) {
+              gpsListenerRef.current.ref.off("value", gpsListenerRef.current.fn);
+              gpsListenerRef.current = null;
+            }
+            return;
+          }
+          const ref = rtdb.ref(`liveRaces/${liveRace.code}/athletes`);
+          const fn = snap => {
+            const map = leafletMapRef.current;
+            if (!map) return;
+            const athletes = snap.val() || [];
+            athletes.forEach((ath, idx) => {
+              if (!ath || !ath.gps) return;
+              const pos = [ath.gps.lat, ath.gps.lng];
+              const markerId = ath.id || idx;
+              const curSeg = (ath.splits || []).findIndex(s => s === null);
+              const col = segColors[curSeg === -1 ? SEGMENTS.length - 1 : curSeg] || "#00aeef";
+              if (leafletMarkersRef.current[markerId]) {
+                leafletMarkersRef.current[markerId].setLatLng(pos);
+              } else {
+                leafletMarkersRef.current[markerId] = L.circleMarker(pos, { radius: 10, color: col, fillColor: col, fillOpacity: 0.8, weight: 2 })
+                  .bindTooltip(ath.firstName ? `${ath.firstName} ${ath.lastName || ""}`.trim() : ath.name || `Athlete ${idx + 1}`, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
+                  .addTo(map);
+              }
+            });
+          };
+          ref.on("value", fn);
+          gpsListenerRef.current = { ref, fn };
+          return () => { ref.off("value", fn); gpsListenerRef.current = null; };
+        }, [liveRace, view]);
+
         // Saved race presets (persisted to localStorage + RTDB)
         const [savedRaces, setSavedRaces] = useState(() => {
           try { return JSON.parse(localStorage.getItem("tri-saved-races") || "[]"); } catch { return []; }
@@ -297,6 +331,7 @@
         const mapRef = useRef(null);
         const leafletMapRef = useRef(null);
         const leafletMarkersRef = useRef({});
+        const gpsListenerRef = useRef(null);
 
         // Saved athlete roster (persisted to localStorage — separate from race-specific athletes)
         const [savedAthletes, setSavedAthletes] = useState(() => {
@@ -861,7 +896,7 @@
               });
             });
           }, err => setJoinGpsStatus("GPS error: " + err.message),
-          { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 });
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
         }
 
         function stopGpsTracking() {
@@ -1982,23 +2017,6 @@
                           );
                         })()}
                         {/* Update athlete markers whenever live data changes */}
-                        {(() => {
-                          if (!leafletMapRef.current) return null;
-                          const map = leafletMapRef.current;
-                          rankedWatchAthletes.forEach((ath, idx) => {
-                            if (!ath.gps) return;
-                            const pos = [ath.gps.lat, ath.gps.lng];
-                            const col = segColors[ath.curSeg ?? 0] || "#00aeef";
-                            if (leafletMarkersRef.current[ath.id]) {
-                              leafletMarkersRef.current[ath.id].setLatLng(pos);
-                            } else {
-                              leafletMarkersRef.current[ath.id] = L.circleMarker(pos, { radius: 10, color: col, fillColor: col, fillOpacity: 0.8, weight: 2 })
-                                .bindTooltip(ath.name, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" }).addTo(map);
-                            }
-                          });
-                          return null;
-                        })()}
-
                         <div style={{ fontSize: 10, letterSpacing: 3, color: "#5a86a8", textAlign: "center", marginBottom: 12 }}>LEADERBOARD</div>
                         {rankedWatchAthletes.length === 0 && <div style={{ textAlign: "center", color: "#3a6080", padding: "30px 0" }}>Waiting for athletes…</div>}
                         {rankedWatchAthletes.map((ath, idx) => {
