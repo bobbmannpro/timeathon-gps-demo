@@ -278,9 +278,13 @@
 
         // GPS Demo state
         const [waypoints, setWaypoints] = useState([
-          { segIdx: 0, label: "Swim End / T1", lat: null, lng: null, radiusM: 30 },
-          { segIdx: 2, label: "Bike End / T2", lat: null, lng: null, radiusM: 30 },
-          { segIdx: 4, label: "Finish Line",   lat: null, lng: null, radiusM: 30 },
+          { id: "start",   label: "Start",    lat: null, lng: null, radiusM: 30, action: "start" },
+          { id: "swimOut", label: "Swim Out", lat: null, lng: null, radiusM: 30, action: "marker" },
+          { id: "t1",      label: "T1",       lat: null, lng: null, radiusM: 30, action: "split", segIdx: 0 },
+          { id: "bikeOut", label: "Bike Out", lat: null, lng: null, radiusM: 30, action: "split", segIdx: 1 },
+          { id: "bikeIn",  label: "Bike In",  lat: null, lng: null, radiusM: 30, action: "split", segIdx: 2 },
+          { id: "runOut",  label: "Run Out",  lat: null, lng: null, radiusM: 30, action: "split", segIdx: 3 },
+          { id: "finish",  label: "Finish",   lat: null, lng: null, radiusM: 30, action: "split", segIdx: 4 },
         ]);
         const [joinCode, setJoinCode] = useState("");
         const [joinRace, setJoinRace] = useState(null);
@@ -822,29 +826,39 @@
         function startGpsTracking() {
           if (!navigator.geolocation) { setJoinGpsStatus("Geolocation not supported on this device."); return; }
           if (joinAthIdx === null) { setJoinGpsStatus("Select your name first."); return; }
-          const activeWps = (joinRace.waypoints || waypoints).filter(wp => wp.lat !== null && wp.lng !== null);
+          const allWps = (joinRace.waypoints || waypoints).filter(wp => wp.lat !== null && wp.lng !== null);
           setJoinGpsActive(true);
           setJoinGpsStatus("Acquiring GPS signal…");
-          let nextSeg = joinNextSeg;
+          const triggered = new Set();
+          let nextWpIdx = 0;
           gpsWatchRef.current = navigator.geolocation.watchPosition(pos => {
             const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
             setJoinGpsPos({ lat, lng, accuracy: pos.coords.accuracy });
             setJoinGpsStatus(`GPS active · accuracy ±${Math.round(pos.coords.accuracy)}m`);
-            // Push live position to RTDB
             rtdb.ref(`liveRaces/${joinRace.code}/athletes/${joinAthIdx}/gps`)
               .set({ lat, lng, heading, speed, t: Date.now() }).catch(console.error);
-            // Check waypoints in order
-            activeWps.forEach(wp => {
-              if (wp.segIdx >= nextSeg && haversineM(lat, lng, wp.lat, wp.lng) < wp.radiusM) {
-                rtdb.ref(`liveRaces/${joinRace.code}`).once("value").then(snap => {
-                  if (!snap.exists()) return;
-                  const clockMs = snap.val().clockMs || 0;
-                  rtdb.ref(`liveRaces/${joinRace.code}/athletes/${joinAthIdx}/splits/${wp.segIdx}`)
-                    .set(clockMs).catch(console.error);
-                  nextSeg = wp.segIdx + 1;
-                  setJoinNextSeg(nextSeg);
-                });
+            allWps.forEach((wp, wi) => {
+              if (triggered.has(wi)) return;
+              if (haversineM(lat, lng, wp.lat, wp.lng) >= wp.radiusM) return;
+              triggered.add(wi);
+              if (wp.action === "marker") {
+                nextWpIdx = wi + 1;
+                setJoinNextSeg(nextWpIdx);
+                return;
               }
+              rtdb.ref(`liveRaces/${joinRace.code}`).once("value").then(snap => {
+                if (!snap.exists()) return;
+                const clockMs = snap.val().clockMs || 0;
+                const athRef = rtdb.ref(`liveRaces/${joinRace.code}/athletes/${joinAthIdx}`);
+                if (wp.action === "start") {
+                  athRef.update({ startOffset: clockMs, started: true }).catch(console.error);
+                } else if (wp.action === "split") {
+                  athRef.child(`splits/${wp.segIdx}`).set(clockMs).catch(console.error);
+                  if (wp.segIdx === 4) athRef.update({ finished: true }).catch(console.error);
+                }
+                nextWpIdx = wi + 1;
+                setJoinNextSeg(nextWpIdx);
+              });
             });
           }, err => setJoinGpsStatus("GPS error: " + err.message),
           { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 });
@@ -1755,7 +1769,8 @@
                               <div style={{ background: "#0c2240", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
                                 <div style={{ fontSize: 10, color: "#5a86a8", letterSpacing: 2, marginBottom: 6 }}>NEXT CHECKPOINT</div>
                                 {(() => {
-                                  const next = (joinRace.waypoints || waypoints).find(wp => wp.segIdx >= joinNextSeg && wp.lat !== null);
+                                  const allWps = (joinRace.waypoints || waypoints).filter(wp => wp.lat !== null);
+                                  const next = allWps[joinNextSeg];
                                   return next
                                     ? <div style={{ fontWeight: 700, color: "#e8f4fb" }}>{next.label} <span style={{ color: "#5a86a8", fontWeight: 400, fontSize: 12 }}>within {next.radiusM}m</span></div>
                                     : <div style={{ color: "#4ade80", fontWeight: 700 }}>All checkpoints passed 🎉</div>;
@@ -2306,6 +2321,9 @@
                       <div key={wi} style={{ background: "#071829", borderRadius: 6, padding: "10px 12px", marginBottom: 8, border: "1px solid rgba(74,222,128,0.15)" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#4ade80", flex: 1 }}>{wp.label}</div>
+                          <div style={{ fontSize: 9, letterSpacing: 1, color: wp.action === "start" ? "#ffd166" : wp.action === "marker" ? "#5a86a8" : "#00aeef", background: wp.action === "start" ? "rgba(255,209,102,0.1)" : wp.action === "marker" ? "rgba(90,134,168,0.1)" : "rgba(0,174,239,0.1)", borderRadius: 3, padding: "2px 6px", textTransform: "uppercase", flexShrink: 0 }}>
+                            {wp.action === "start" ? "Starts clock" : wp.action === "marker" ? "Map only" : `Logs ${SEGMENTS[wp.segIdx]}`}
+                          </div>
                           {wp.lat !== null
                             ? <div style={{ fontSize: 10, color: "#4ade80", background: "rgba(74,222,128,0.1)", borderRadius: 4, padding: "2px 8px" }}>✓ Pinned</div>
                             : <div style={{ fontSize: 10, color: "#5a86a8" }}>Not set</div>}
