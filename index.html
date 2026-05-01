@@ -319,14 +319,14 @@
 
         // GPS Demo state
         const [waypoints, setWaypoints] = useState([
-          { id: "start",   label: "Start",    lat: null, lng: null, radiusM: 30, action: "start",  fixed: true },
-          { id: "swimOut", label: "Swim Out", lat: null, lng: null, radiusM: 30, action: "marker", fixed: true },
-          { id: "t1",      label: "T1",       lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 0 },
-          { id: "bikeOut", label: "Bike Out", lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 1 },
-          { id: "bikeIn",  label: "Bike In",  lat: null, lng: null, radiusM: 30, action: "marker", fixed: true },
-          { id: "t2",      label: "T2",       lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 2 },
-          { id: "runOut",  label: "Run Out",  lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 3 },
-          { id: "finish",  label: "Finish",   lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 4 },
+          { id: "start",   label: "Start",    lat: null, lng: null, radiusM: 30, action: "start",  fixed: true, enabled: true },
+          { id: "swimOut", label: "Swim Out", lat: null, lng: null, radiusM: 30, action: "marker", fixed: true, enabled: true },
+          { id: "t1",      label: "T1",       lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 0, enabled: true },
+          { id: "bikeOut", label: "Bike Out", lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 1, enabled: true },
+          { id: "bikeIn",  label: "Bike In",  lat: null, lng: null, radiusM: 30, action: "marker", fixed: true, enabled: true },
+          { id: "t2",      label: "T2",       lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 2, enabled: true },
+          { id: "runOut",  label: "Run Out",  lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 3, enabled: true },
+          { id: "finish",  label: "Finish",   lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 4, enabled: true },
         ]);
         const [joinCode, setJoinCode] = useState("");
         const [joinRace, setJoinRace] = useState(null);
@@ -350,6 +350,15 @@
           try { return JSON.parse(localStorage.getItem("tri-saved-athletes") || "[]"); } catch { return []; }
         });
 
+        // Archive — auto-saved results
+        const [savedArchive, setSavedArchive] = useState(() => {
+          try { return JSON.parse(localStorage.getItem("tri-archive") || "[]"); } catch { return []; }
+        });
+        const [archiveOpenId, setArchiveOpenId] = useState(null);
+        const [archiveOpenAthId, setArchiveOpenAthId] = useState(null);
+        const archiveSessionRef = useRef(null);
+        const [archiveDeleteConfirm, setArchiveDeleteConfirm] = useState(null);
+
         const clockRef     = useRef(null);
         const startTimeRef = useRef(null);
         const offsetRef    = useRef(0);
@@ -370,6 +379,10 @@
         useEffect(() => {
           if (liveRaceCode && athletes.some(a => a.started)) updateLiveRace(liveRaceCode);
         }, [athletes, clockMs]);
+
+        useEffect(() => {
+          if (athletes.some(a => a.finished)) autoArchiveRace();
+        }, [athletes]);
 
         // Firebase auth listener — loads RTDB data on login
         useEffect(() => {
@@ -401,6 +414,13 @@
                   setSavedAthletes(data.athletes); localStorage.setItem("tri-saved-athletes", JSON.stringify(data.athletes));
                 } else {
                   try { const c = localStorage.getItem("tri-saved-athletes"); if (c) { const a = JSON.parse(c); if (a.length > 0) { setSavedAthletes(a); rtdb.ref("users/" + user.uid + "/athletes").set(a).catch(console.error); } } } catch(_) {}
+                }
+
+                // Archive: RTDB → localStorage fallback
+                if (data.archive && data.archive.length > 0) {
+                  setSavedArchive(data.archive); localStorage.setItem("tri-archive", JSON.stringify(data.archive));
+                } else {
+                  try { const c = localStorage.getItem("tri-archive"); if (c) { const ar = JSON.parse(c); if (ar.length > 0) { setSavedArchive(ar); rtdb.ref("users/" + user.uid + "/archive").set(ar).catch(console.error); } } } catch(_) {}
                 }
               } catch(e) { console.error("RTDB load:", e); }
             }
@@ -510,7 +530,65 @@
           return map[code] || "Something went wrong. Please try again.";
         }
 
+        function autoArchiveRace() {
+          if (!athletes.some(a => a.finished)) return;
+          if (!archiveSessionRef.current) archiveSessionRef.current = `session_${Date.now()}`;
+          const sessionId = archiveSessionRef.current;
+          const entry = {
+            id: sessionId, name: certConfig.eventName || "Race", date: new Date().toLocaleDateString(),
+            savedAt: Date.now(), segments: SEGMENTS, courses, units, certConfig,
+            athletes: athletes.map(a => ({ id: a.id, name: athleteName(a) || a.name, firstName: a.firstName || "", lastName: a.lastName || "", gender: a.gender, ageGroup: a.ageGroup, splits: [...a.splits], startOffset: a.startOffset, finished: a.finished, finishMs: totalChipTime(a) })),
+            finishedCount: athletes.filter(a => a.finished).length, totalCount: athletes.length,
+          };
+          setSavedArchive(prev => {
+            const idx = prev.findIndex(r => r.id === sessionId);
+            const updated = idx >= 0 ? prev.map((r, i) => i === idx ? entry : r) : [...prev, entry];
+            localStorage.setItem("tri-archive", JSON.stringify(updated));
+            if (currentUser) rtdb.ref("users/" + currentUser.uid + "/archive").set(updated).catch(console.error);
+            return updated;
+          });
+        }
+
+        function archiveSegDur(ath, si) {
+          const splits = ath.splits || [];
+          const prev = si === 0 ? ath.startOffset : splits[si - 1];
+          const cur = splits[si];
+          if (cur == null || prev == null) return null;
+          return cur - prev;
+        }
+
+        function archiveAgPlace(allAthletes, ath) {
+          const finishers = (allAthletes || []).filter(a => a.finished && a.gender === ath.gender && a.ageGroup === ath.ageGroup).sort((a, b) => (a.finishMs || Infinity) - (b.finishMs || Infinity));
+          const idx = finishers.findIndex(a => a.id === ath.id);
+          return idx >= 0 ? idx + 1 : null;
+        }
+
+        function printArchivedCert(race, targetAth) {
+          const medalEmoji = ["🥇","🥈","🥉"], medalColors = ["#d4a017","#8a9ba8","#b87333"];
+          const cfg = race.certConfig || { eventName: race.name, orgName: "", customLogoB64: null };
+          const raceUnits = race.units || units;
+          const segs = race.segments || SEGMENTS;
+          const raceCourses = race.courses || courses;
+          const finishers = (race.athletes || []).filter(a => a.finished).sort((a, b) => (a.finishMs || Infinity) - (b.finishMs || Infinity));
+          const toprint = targetAth ? [targetAth] : finishers;
+          const certHTML = toprint.map(ath => {
+            const place = finishers.findIndex(a => a.id === ath.id);
+            const ac = raceCourses.find(c => c.id === ath.courseId) || raceCourses[0] || { name: "Race", swimYards: 0, bikeMiles: 0, runMiles: 0 };
+            const swimMs = archiveSegDur(ath, 0), bikeMs = archiveSegDur(ath, 2), runMs = archiveSegDur(ath, 4);
+            const sp = calcSwimPace(swimMs, ac.swimYards, raceUnits.swim), bp = calcBikeMph(bikeMs, ac.bikeMiles, raceUnits.bike), rp = calcRunPace(runMs, ac.runMiles, raceUnits.run);
+            const pColor = place >= 0 && place < 3 ? medalColors[place] : "#5a86a8";
+            const medal = place >= 0 && place < 3 ? medalEmoji[place] : "🏅";
+            const agp = archiveAgPlace(race.athletes, ath);
+            const segPills = segs.map((seg, si) => { const dur = archiveSegDur(ath, si); return dur !== null ? `<div class="seg"><div class="seg-name">${seg}</div><div class="seg-time">${formatElapsed(dur)}</div></div>` : ""; }).join("");
+            return `<div class="cert"><img src="${cfg.customLogoB64 || LOGO_B64}" class="bg-logo" alt="" /><img src="${cfg.customLogoB64 || LOGO_B64}" class="logo" alt="Logo" /><div class="top-rule"></div><div class="event">${cfg.eventName}</div>${cfg.orgName ? `<div class="org">${cfg.orgName}</div>` : ""}<div class="medal-emoji">${medal}</div><div class="place" style="color:${pColor}">${place >= 0 ? placeSuffix(place + 1) + " Place Overall" : "Finisher"}</div><div class="name">${ath.name}</div>${agp !== null ? `<div class="ag-place">${ath.gender} ${ath.ageGroup} &mdash; ${placeSuffix(agp)} in Age Group</div>` : ""}<div class="time-row"><div class="time-block"><div class="time-label">Chip Time</div><div class="time-val">${ath.finishMs != null ? formatElapsed(ath.finishMs) : "--"}</div></div></div><div class="segs">${segPills}</div><div class="paces">${sp ? `<span>🏊 ${sp}</span>` : ""}${bp ? `<span>🚴 ${bp}</span>` : ""}${rp ? `<span>🏃 ${rp}</span>` : ""}</div><div class="bottom-rule"></div></div>`;
+          }).join("");
+          const win = window.open("", "_blank");
+          win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Certificate</title><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&family=Bebas+Neue&display=swap" rel="stylesheet"><style>*{box-sizing:border-box;margin:0;padding:0;}@page{size:landscape;margin:0;}body{background:#fff;font-family:'DM Sans',Arial,sans-serif;}.cert{width:100vw;height:100vh;page-break-after:always;break-after:page;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:5px solid #00aeef;background:linear-gradient(150deg,#f0f8ff 0%,#ffffff 55%,#e8f4fb 100%);padding:28px 50px;position:relative;overflow:hidden;}.bg-logo{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:44%;opacity:.09;pointer-events:none;object-fit:contain;}.logo{height:52px;object-fit:contain;margin-bottom:2px;}.top-rule,.bottom-rule{width:60%;height:2px;background:linear-gradient(90deg,transparent,#00aeef,transparent);}.event{font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#5a86a8;text-align:center;}.org{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#00aeef;text-align:center;margin-top:-4px;}.medal-emoji{font-size:48px;line-height:1;}.place{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:4px;}.ag-place{font-size:12px;letter-spacing:2px;color:#0d3a6e;font-weight:700;text-align:center;}.name{font-family:'Bebas Neue',sans-serif;font-size:68px;letter-spacing:5px;color:#071829;line-height:1;text-align:center;}.time-row{display:flex;gap:30px;align-items:center;margin:4px 0;}.time-block{text-align:center;}.time-label{font-size:10px;text-transform:uppercase;letter-spacing:2px;color:#5a86a8;font-weight:700;}.time-val{font-family:'Bebas Neue',sans-serif;font-size:38px;letter-spacing:3px;color:#071829;}.segs{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;}.seg{text-align:center;}.seg-name{font-size:9px;text-transform:uppercase;letter-spacing:2px;color:#5a86a8;font-weight:700;}.seg-time{font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:2px;color:#0d3a6e;}.paces{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;}.paces span{font-size:11px;color:#5a86a8;font-weight:600;background:#f0f8ff;border:1px solid rgba(0,174,239,.3);border-radius:20px;padding:3px 12px;}</style></head><body>${certHTML}<script>window.onload=()=>{window.print();}<\/script></body></html>`);
+          win.document.close();
+        }
+
         function startClock() {
+          if (!archiveSessionRef.current) archiveSessionRef.current = `session_${Date.now()}`;
           offsetRef.current = 0;
           setClockMs(0);
           setClockRunning(true);
@@ -524,6 +602,7 @@
         function resetClock()  { setClockRunning(false); setClockStarted(false); offsetRef.current = 0; setClockMs(0); }
 
         function resetTimers() {
+          archiveSessionRef.current = null;
           setAthletes(a => a.map(ath => ({ ...freshAthlete(ath.name, ath.id), gender: ath.gender || "Male", ageGroup: ath.ageGroup || ageGroups[0] || "9-10", dob: ath.dob || "", courseId: ath.courseId || courses[0]?.id || null })));
           resetClock();
           setResetConfirm(false);
@@ -873,7 +952,7 @@
         function startGpsTracking() {
           if (!navigator.geolocation) { setJoinGpsStatus("Geolocation not supported on this device."); return; }
           if (joinAthIdx === null) { setJoinGpsStatus("Select your name first."); return; }
-          const allWps = (joinRace.waypoints || waypoints).filter(wp => wp.lat !== null && wp.lng !== null);
+          const allWps = (joinRace.waypoints || waypoints).filter(wp => wp.lat !== null && wp.lng !== null && wp.enabled !== false);
           setJoinGpsActive(true);
           setJoinGpsStatus("Acquiring GPS signal…");
           const triggered = new Set();
@@ -1625,6 +1704,18 @@
                       <div style={{ marginLeft: "auto", fontSize: 22, color: "#4ade80" }}>&#8594;</div>
                     </button>
 
+                    {/* Past Races */}
+                    <button onClick={() => setView("archive")} style={{ background: "linear-gradient(135deg,#0c2240,#1a0a2e)", border: "2px solid #f4742b", borderRadius: 12, padding: "22px 24px", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", gap: 18 }}>
+                      <div style={{ fontSize: 40, lineHeight: 1 }}>📁</div>
+                      <div>
+                        <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 26, letterSpacing: 3, color: "#f4742b" }}>Past Races</div>
+                        <div style={{ fontSize: 12, color: "#5a86a8", marginTop: 2 }}>
+                          {savedArchive.length === 0 ? "No past races yet" : `${savedArchive.length} race${savedArchive.length !== 1 ? "s" : ""} saved`}
+                        </div>
+                      </div>
+                      <div style={{ marginLeft: "auto", fontSize: 22, color: "#f4742b" }}>&#8594;</div>
+                    </button>
+
                     {/* Watch a Race */}
                     <button onClick={() => setView("watch")} style={{ background: "linear-gradient(135deg,#0c2240,#1a1a3a)", border: "2px solid #a78bfa", borderRadius: 12, padding: "22px 24px", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", gap: 18 }}>
                       <div style={{ fontSize: 40, lineHeight: 1 }}>👀</div>
@@ -1636,6 +1727,72 @@
                     </button>
 
                   </div>
+                </div>
+              )}
+
+              {/* ── PAST RACES ── */}
+              {view === "archive" && (
+                <div style={{ paddingTop: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 3, textTransform: "uppercase", color: "#f4742b", marginBottom: 16 }}>📁 Past Races</div>
+                  {savedArchive.length === 0 ? (
+                    <div style={{ background: "#0a1e36", border: "1px solid rgba(244,116,43,0.2)", borderRadius: 8, padding: "28px 20px", textAlign: "center", color: "#3a6080", fontSize: 13 }}>
+                      No past races yet — races are saved automatically when an athlete finishes.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {[...savedArchive].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0)).map(race => {
+                        const isOpen = archiveOpenId === race.id;
+                        const finishers = (race.athletes || []).filter(a => a.finished).sort((a, b) => (a.finishMs || Infinity) - (b.finishMs || Infinity));
+                        const dnf = (race.athletes || []).filter(a => !a.finished);
+                        const segs = race.segments || SEGMENTS;
+                        return (
+                          <div key={race.id} style={{ background: "#0c2240", borderRadius: 10, border: "1px solid rgba(244,116,43,0.2)", overflow: "hidden" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px" }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 700, fontSize: 15, color: "#e8f4fb" }}>{race.name}</div>
+                                <div style={{ fontSize: 11, color: "#3a6080", marginTop: 2 }}>{race.date} · {race.finishedCount}/{race.totalCount} finished</div>
+                              </div>
+                              <button onClick={() => printArchivedCert(race, null)} style={{ ...btnStyle("#ffd166", true), padding: "4px 10px", fontSize: 11, flexShrink: 0 }}>🏆 Certs</button>
+                              <button onClick={() => setArchiveOpenId(isOpen ? null : race.id)} style={{ background: "none", border: "none", color: "#5a86a8", fontSize: 18, cursor: "pointer", padding: "0 4px" }}>{isOpen ? "▲" : "▼"}</button>
+                              {archiveDeleteConfirm === race.id ? (
+                                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                  <span style={{ fontSize: 11, color: "#f87171" }}>Delete?</span>
+                                  <button onClick={() => { setSavedArchive(prev => { const u = prev.filter(r => r.id !== race.id); localStorage.setItem("tri-archive", JSON.stringify(u)); if (currentUser) rtdb.ref("users/" + currentUser.uid + "/archive").set(u).catch(console.error); return u; }); setArchiveDeleteConfirm(null); }} style={{ ...btnStyle("#f87171"), padding: "3px 8px", fontSize: 11 }}>Yes</button>
+                                  <button onClick={() => setArchiveDeleteConfirm(null)} style={{ ...btnStyle("#5a86a8", true), padding: "3px 8px", fontSize: 11 }}>No</button>
+                                </div>
+                              ) : (
+                                <button onClick={() => setArchiveDeleteConfirm(race.id)} style={{ background: "none", border: "none", color: "#3a6080", fontSize: 18, cursor: "pointer", padding: "0 2px" }}>&times;</button>
+                              )}
+                            </div>
+                            {isOpen && (
+                              <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "10px 14px" }}>
+                                {finishers.map((ath, rank) => {
+                                  const athOpen = archiveOpenAthId === `${race.id}-${ath.id}`;
+                                  const medals = ["🥇","🥈","🥉"];
+                                  return (
+                                    <div key={ath.id} style={{ marginBottom: 8 }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,0.04)", cursor: "pointer" }} onClick={() => setArchiveOpenAthId(athOpen ? null : `${race.id}-${ath.id}`)}>
+                                        <div style={{ fontSize: 14 }}>{rank < 3 ? medals[rank] : `${rank + 1}.`}</div>
+                                        <div style={{ flex: 1, fontSize: 13, color: "#e8f4fb", fontWeight: 600 }}>{ath.name}</div>
+                                        <div style={{ fontFamily: "'Bebas Neue'", fontSize: 18, color: "#4ade80", letterSpacing: 2 }}>{ath.finishMs != null ? formatElapsed(ath.finishMs) : "--"}</div>
+                                        <button onClick={e => { e.stopPropagation(); printArchivedCert(race, ath); }} style={{ background: "none", border: "1px solid rgba(0,174,239,0.3)", borderRadius: 4, padding: "3px 8px", fontSize: 10, color: "#00aeef", cursor: "pointer" }}>🏆</button>
+                                      </div>
+                                      {athOpen && (
+                                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "6px 0 4px 22px" }}>
+                                          {segs.map((seg, si) => { const dur = archiveSegDur(ath, si); return dur !== null ? (<div key={si} style={{ background: "rgba(0,174,239,0.08)", border: "1px solid rgba(0,174,239,0.18)", borderRadius: 4, padding: "3px 8px", textAlign: "center" }}><div style={{ fontSize: 9, color: "#5a86a8", letterSpacing: 1, textTransform: "uppercase" }}>{seg}</div><div style={{ fontSize: 12, color: "#e8f4fb", fontWeight: 700 }}>{formatElapsed(dur)}</div></div>) : null; })}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {dnf.length > 0 && <div style={{ fontSize: 11, color: "#5a86a8", marginTop: 6 }}>DNF: {dnf.map(a => a.name).join(", ")}</div>}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2422,6 +2579,11 @@
                           <div style={{ fontSize: 9, letterSpacing: 1, color: wp.action === "start" ? "#ffd166" : wp.action === "marker" ? "#5a86a8" : "#00aeef", background: wp.action === "start" ? "rgba(255,209,102,0.1)" : wp.action === "marker" ? "rgba(90,134,168,0.1)" : "rgba(0,174,239,0.1)", borderRadius: 3, padding: "2px 6px", textTransform: "uppercase", flexShrink: 0 }}>
                             {wp.action === "start" ? "Starts clock" : wp.action === "marker" ? "Map only" : `Logs ${SEGMENTS[wp.segIdx]}`}
                           </div>
+                          <button onClick={() => setWaypoints(pws => pws.map(w => w.id === wp.id ? { ...w, enabled: !w.enabled } : w))}
+                            title={wp.enabled !== false ? "GPS auto-trigger ON — click to disable" : "GPS auto-trigger OFF — click to enable"}
+                            style={{ background: wp.enabled !== false ? "rgba(74,222,128,0.15)" : "rgba(248,113,113,0.1)", border: `1px solid ${wp.enabled !== false ? "rgba(74,222,128,0.4)" : "rgba(248,113,113,0.3)"}`, borderRadius: 4, padding: "2px 7px", fontSize: 9, color: wp.enabled !== false ? "#4ade80" : "#f87171", cursor: "pointer", letterSpacing: 1, flexShrink: 0 }}>
+                            {wp.enabled !== false ? "GPS ON" : "GPS OFF"}
+                          </button>
                           {!wp.fixed && <button onClick={() => setWaypoints(wps => wps.filter(w => w.id !== wp.id))} style={{ background: "none", border: "none", color: "#5a86a8", fontSize: 16, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>&times;</button>}
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
