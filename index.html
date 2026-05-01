@@ -292,9 +292,6 @@
           return () => { ref.off("value", fn); gpsListenerRef.current = null; };
         }, [liveRace, view]);
 
-        // Keep waypointsRef current so initSetupMap (stable useCallback) can read latest waypoints
-        useEffect(() => { waypointsRef.current = waypoints; }, [waypoints]);
-
         // Escape key cancels map placement mode
         useEffect(() => {
           const handler = e => { if (e.key === "Escape" && activePlacementRef.current) { activePlacementRef.current = null; setActivePlacementId(null); } };
@@ -407,6 +404,9 @@
             });
           }, 200);
         }, []);
+
+        // Keep waypointsRef current so initSetupMap (stable useCallback) can read latest waypoints
+        useEffect(() => { waypointsRef.current = waypoints; }, [waypoints]);
 
         // Saved athlete roster (persisted to localStorage — separate from race-specific athletes)
         const [savedAthletes, setSavedAthletes] = useState(() => {
