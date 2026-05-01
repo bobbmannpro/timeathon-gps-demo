@@ -34,6 +34,7 @@
       @keyframes pulse { 0%,100%{opacity:0.2;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
       .leaflet-ath-label { background: rgba(7,24,41,0.85); border: 1px solid rgba(0,174,239,0.5); color: #e8f4fb; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
       .leaflet-ath-label::before { display: none; }
+      .leaflet-container { clip-path: inset(0); }
     </style>
   </head>
   <body>
@@ -61,7 +62,7 @@
       var rtdb = firebase.database();
     </script>
     <script type="text/babel" data-presets="react">
-      const { useState, useEffect, useRef } = React;
+      const { useState, useEffect, useRef, useCallback } = React;
 
       // Run is the final segment — logging it ends the race for that athlete
       const SEGMENTS   = ["Swim", "T1", "Bike", "T2", "Run"];
@@ -353,6 +354,37 @@
         const setupMapPinsRef = useRef({});
         const activePlacementRef = useRef(null);
         const [activePlacementId, setActivePlacementId] = useState(null);
+
+        // Stable ref callback for setup map — useCallback([]) prevents destroy/recreate on every render
+        const initSetupMap = useCallback(el => {
+          if (!el) {
+            if (setupMapRef.current) {
+              setupMapViewRef.current = { center: setupMapRef.current.getCenter(), zoom: setupMapRef.current.getZoom() };
+              setupMapRef.current.remove();
+              setupMapRef.current = null;
+            }
+            setupMapPinsRef.current = {};
+            return;
+          }
+          if (setupMapRef.current) return;
+          const map = L.map(el, { zoomControl: true, attributionControl: false });
+          L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+          if (setupMapViewRef.current) {
+            map.setView(setupMapViewRef.current.center, setupMapViewRef.current.zoom);
+          } else {
+            map.setView([39.5, -98.35], 4);
+            navigator.geolocation?.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15), null, { enableHighAccuracy: false });
+          }
+          map.on("click", e => {
+            const id = activePlacementRef.current;
+            if (!id) return;
+            setWaypoints(wps => wps.map(wp => wp.id === id ? { ...wp, lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6) } : wp));
+            activePlacementRef.current = null;
+            setActivePlacementId(null);
+          });
+          setupMapRef.current = map;
+          setTimeout(() => map.invalidateSize(), 200);
+        }, []);
 
         // Saved athlete roster (persisted to localStorage — separate from race-specific athletes)
         const [savedAthletes, setSavedAthletes] = useState(() => {
@@ -2200,47 +2232,6 @@
                         </div>
                         <div style={{ fontSize: 10, letterSpacing: 3, color: "#5a86a8", textAlign: "center", marginBottom: 12 }}>LEADERBOARD</div>
                         {rankedWatchAthletes.length === 0 && <div style={{ textAlign: "center", color: "#3a6080", padding: "30px 0" }}>Waiting for athletes…</div>}
-                        {/* Live GPS Map — below leaderboard, always rendered so the dedicated listener can populate markers */}
-                        {(() => {
-                          const wps = (liveRace.waypoints || []).filter(w => w.lat !== null && w.lng !== null);
-                          const hasGps = rankedWatchAthletes.some(a => a.gps);
-                          return (
-                            <div style={{ marginBottom: 16, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(74,222,128,0.3)", position: "relative", zIndex: 0, isolation: "isolate" }}>
-                              <div style={{ fontSize: 10, letterSpacing: 3, color: "#4ade80", padding: "8px 12px", background: "#0c2240" }}>📍 LIVE GPS MAP</div>
-                              <div ref={el => {
-                                if (!el || leafletMapRef.current) return;
-                                const firstGps = rankedWatchAthletes.find(a => a.gps);
-                                const center = wps[0] ? [wps[0].lat, wps[0].lng]
-                                  : firstGps ? [firstGps.gps.lat, firstGps.gps.lng]
-                                  : [37.7749, -122.4194];
-                                const map = L.map(el, { zoomControl: true, attributionControl: false }).setView(center, 15);
-                                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-                                if (wps.length > 1) {
-                                  L.polyline(wps.map(w => [w.lat, w.lng]), { color: "#4ade80", weight: 3, opacity: 0.7 }).addTo(map);
-                                }
-                                wps.forEach(wp => {
-                                  L.circleMarker([wp.lat, wp.lng], { radius: 8, color: "#4ade80", fillColor: "#4ade80", fillOpacity: 0.3, weight: 2 })
-                                    .bindTooltip(wp.label, { permanent: false }).addTo(map);
-                                });
-                                rankedWatchAthletes.forEach((ath, idx) => {
-                                  if (!ath.gps) return;
-                                  const pos = [ath.gps.lat, ath.gps.lng];
-                                  const markerId = ath.id || idx;
-                                  const curSeg = (ath.splits || []).findIndex(s => s === null);
-                                  const col = segColors[curSeg === -1 ? SEGMENTS.length - 1 : curSeg] || "#00aeef";
-                                  const athName = ath.firstName ? `${ath.firstName} ${ath.lastName || ""}`.trim() : ath.name || `Athlete ${idx + 1}`;
-                                  const distLabel = ath.gps.distanceMi != null ? ` · ${ath.gps.distanceMi.toFixed(2)} mi` : "";
-                                  leafletMarkersRef.current[markerId] = L.circleMarker(pos, { radius: 10, color: col, fillColor: col, fillOpacity: 0.8, weight: 2 })
-                                    .bindTooltip(`${athName}${distLabel}`, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
-                                    .addTo(map);
-                                });
-                                leafletMapRef.current = map;
-                                setTimeout(() => map.invalidateSize(), 200);
-                              }} style={{ height: 220 }} />
-                              {!hasGps && <div style={{ textAlign: "center", padding: "8px", fontSize: 10, color: "#3a6080", background: "#071829" }}>Waiting for athlete GPS…</div>}
-                            </div>
-                          );
-                        })()}
                         {rankedWatchAthletes.map((ath, idx) => {
                           const place = idx + 1;
                           const medal = watchMedals[idx] || null;
@@ -2306,6 +2297,47 @@
                             </div>
                           );
                         })}
+                        {/* Live GPS Map — below all athlete rows so it never overlaps the race clock on scroll */}
+                        {(() => {
+                          const wps = (liveRace.waypoints || []).filter(w => w.lat !== null && w.lng !== null);
+                          const hasGps = rankedWatchAthletes.some(a => a.gps);
+                          return (
+                            <div style={{ marginTop: 16, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(74,222,128,0.3)", position: "relative", zIndex: 0, isolation: "isolate", contain: "layout paint" }}>
+                              <div style={{ fontSize: 10, letterSpacing: 3, color: "#4ade80", padding: "8px 12px", background: "#0c2240" }}>📍 LIVE GPS MAP</div>
+                              <div ref={el => {
+                                if (!el || leafletMapRef.current) return;
+                                const firstGps = rankedWatchAthletes.find(a => a.gps);
+                                const center = wps[0] ? [wps[0].lat, wps[0].lng]
+                                  : firstGps ? [firstGps.gps.lat, firstGps.gps.lng]
+                                  : [37.7749, -122.4194];
+                                const map = L.map(el, { zoomControl: true, attributionControl: false }).setView(center, 15);
+                                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+                                if (wps.length > 1) {
+                                  L.polyline(wps.map(w => [w.lat, w.lng]), { color: "#4ade80", weight: 3, opacity: 0.7 }).addTo(map);
+                                }
+                                wps.forEach(wp => {
+                                  L.circleMarker([wp.lat, wp.lng], { radius: 8, color: "#4ade80", fillColor: "#4ade80", fillOpacity: 0.3, weight: 2 })
+                                    .bindTooltip(wp.label, { permanent: false }).addTo(map);
+                                });
+                                rankedWatchAthletes.forEach((ath, idx) => {
+                                  if (!ath.gps) return;
+                                  const pos = [ath.gps.lat, ath.gps.lng];
+                                  const markerId = ath.id || idx;
+                                  const curSeg = (ath.splits || []).findIndex(s => s === null);
+                                  const col = segColors[curSeg === -1 ? SEGMENTS.length - 1 : curSeg] || "#00aeef";
+                                  const athName = ath.firstName ? `${ath.firstName} ${ath.lastName || ""}`.trim() : ath.name || `Athlete ${idx + 1}`;
+                                  const distLabel = ath.gps.distanceMi != null ? ` · ${ath.gps.distanceMi.toFixed(2)} mi` : "";
+                                  leafletMarkersRef.current[markerId] = L.circleMarker(pos, { radius: 10, color: col, fillColor: col, fillOpacity: 0.8, weight: 2 })
+                                    .bindTooltip(`${athName}${distLabel}`, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
+                                    .addTo(map);
+                                });
+                                leafletMapRef.current = map;
+                                setTimeout(() => map.invalidateSize(), 200);
+                              }} style={{ height: 220 }} />
+                              {!hasGps && <div style={{ textAlign: "center", padding: "8px", fontSize: 10, color: "#3a6080", background: "#071829" }}>Waiting for athlete GPS…</div>}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -2564,25 +2596,7 @@
                         Click the map to place <strong>{waypoints.find(w => w.id === activePlacementId)?.label}</strong> — or press Esc to cancel
                       </div>
                     )}
-                    <div ref={el => {
-                      if (!el) { if (setupMapRef.current) { setupMapViewRef.current = { center: setupMapRef.current.getCenter(), zoom: setupMapRef.current.getZoom() }; setupMapRef.current.remove(); } setupMapRef.current = null; setupMapPinsRef.current = {}; return; }
-                      if (setupMapRef.current) return;
-                      const map = L.map(el, { zoomControl: true, attributionControl: false });
-                      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-                      if (setupMapViewRef.current) { map.setView(setupMapViewRef.current.center, setupMapViewRef.current.zoom); }
-                      else { const firstSet = waypoints.find(wp => wp.lat !== null);
-                      if (firstSet) { map.setView([firstSet.lat, firstSet.lng], 15); }
-                      else { map.setView([39.5, -98.35], 4); navigator.geolocation?.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15), null, { enableHighAccuracy: false }); } }
-                      map.on("click", e => {
-                        const id = activePlacementRef.current;
-                        if (!id) return;
-                        setWaypoints(wps => wps.map(wp => wp.id === id ? { ...wp, lat: +e.latlng.lat.toFixed(6), lng: +e.latlng.lng.toFixed(6) } : wp));
-                        activePlacementRef.current = null;
-                        setActivePlacementId(null);
-                      });
-                      setupMapRef.current = map;
-                      setTimeout(() => map.invalidateSize(), 200);
-                    }} style={{ height: 260, borderRadius: 8, overflow: "hidden", marginBottom: 10, cursor: activePlacementId ? "crosshair" : "grab", outline: activePlacementId ? "2px solid #ffd166" : "none" }} />
+                    <div ref={initSetupMap} style={{ height: 260, borderRadius: 8, overflow: "hidden", marginBottom: 10, cursor: activePlacementId ? "crosshair" : "grab", outline: activePlacementId ? "2px solid #ffd166" : "none" }} />
 
                     {/* Sync setup map pins on every render */}
                     {(() => {
