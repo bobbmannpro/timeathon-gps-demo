@@ -704,7 +704,9 @@
           setLoadedRaceId(race.id);
           if (race.units) setUnits(race.units);
           if (race.certConfig) setCertConfig(race.certConfig);
-          const loadedWaypoints = race.waypoints || DEFAULT_WAYPOINTS;
+          const loadedWaypoints = (race.waypoints || DEFAULT_WAYPOINTS).map(wp => ({
+            ...wp, lat: wp.lat ?? null, lng: wp.lng ?? null
+          }));
           setWaypoints(loadedWaypoints);
           // Re-center setup map to first placed waypoint if the map is already open
           const firstPlaced = loadedWaypoints.find(wp => wp.lat !== null);
@@ -2632,7 +2634,7 @@
                         if (!waypoints.find(wp => wp.id === id)) { setupMapPinsRef.current[id].remove(); delete setupMapPinsRef.current[id]; }
                       });
                       waypoints.forEach((wp, wi) => {
-                        if (wp.lat === null || wp.lng === null) { if (setupMapPinsRef.current[wp.id]) { setupMapPinsRef.current[wp.id].remove(); delete setupMapPinsRef.current[wp.id]; } return; }
+                        if (wp.lat == null || wp.lng == null) { if (setupMapPinsRef.current[wp.id]) { setupMapPinsRef.current[wp.id].remove(); delete setupMapPinsRef.current[wp.id]; } return; }
                         const color = WP_COLORS[wi % WP_COLORS.length];
                         const makeIcon = c => L.divIcon({ className: "", html: `<div style="background:${c};width:16px;height:16px;border-radius:50%;border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.7)"></div>`, iconSize: [16,16], iconAnchor: [8,8] });
                         if (setupMapPinsRef.current[wp.id]) {
@@ -2711,10 +2713,10 @@
                               style={{ width: 52, background: "#0c2240", border: "1px solid rgba(74,222,128,0.2)", borderRadius: 4, padding: "5px 6px", color: "#e8f4fb", fontSize: 11, outline: "none", textAlign: "center" }} />
                             <span style={{ fontSize: 10, color: "#5a86a8" }}>m</span>
                           </div>
-                          {wp.lat !== null
+                          {wp.lat != null
                             ? <div style={{ fontSize: 10, color: "#4ade80" }}>✓ {wp.lat.toFixed(4)}, {wp.lng.toFixed(4)}</div>
                             : <div style={{ fontSize: 10, color: "#5a86a8" }}>Not placed</div>}
-                          {wp.lat !== null && <button onClick={() => setWaypoints(wps => wps.map((w, i) => i === wi ? { ...w, lat: null, lng: null } : w))} style={{ background: "none", border: "none", color: "#5a86a8", fontSize: 13, cursor: "pointer" }}>&times;</button>}
+                          {wp.lat != null && <button onClick={() => setWaypoints(wps => wps.map((w, i) => i === wi ? { ...w, lat: null, lng: null } : w))} style={{ background: "none", border: "none", color: "#5a86a8", fontSize: 13, cursor: "pointer" }}>&times;</button>}
                         </div>
                         </div>
                       </div>
