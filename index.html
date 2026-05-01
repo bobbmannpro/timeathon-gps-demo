@@ -292,6 +292,9 @@
           return () => { ref.off("value", fn); gpsListenerRef.current = null; };
         }, [liveRace, view]);
 
+        // Keep waypointsRef current so initSetupMap (stable useCallback) can read latest waypoints
+        useEffect(() => { waypointsRef.current = waypoints; }, [waypoints]);
+
         // Escape key cancels map placement mode
         useEffect(() => {
           const handler = e => { if (e.key === "Escape" && activePlacementRef.current) { activePlacementRef.current = null; setActivePlacementId(null); } };
@@ -357,6 +360,7 @@
         const setupMapPinsRef = useRef({});
         const activePlacementRef = useRef(null);
         const [activePlacementId, setActivePlacementId] = useState(null);
+        const waypointsRef = useRef(waypoints);
 
         // Stable ref callback for setup map — useCallback([]) prevents destroy/recreate on every render
         const initSetupMap = useCallback(el => {
@@ -375,8 +379,9 @@
           if (setupMapViewRef.current) {
             map.setView(setupMapViewRef.current.center, setupMapViewRef.current.zoom);
           } else {
-            map.setView([39.5, -98.35], 4);
-            navigator.geolocation?.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15), null, { enableHighAccuracy: false });
+            const firstPlaced = waypointsRef.current.find(wp => wp.lat != null);
+            if (firstPlaced) { map.setView([firstPlaced.lat, firstPlaced.lng], 15); }
+            else { map.setView([39.5, -98.35], 4); navigator.geolocation?.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15), null, { enableHighAccuracy: false }); }
           }
           map.on("click", e => {
             const id = activePlacementRef.current;
@@ -386,7 +391,21 @@
             setActivePlacementId(null);
           });
           setupMapRef.current = map;
-          setTimeout(() => map.invalidateSize(), 200);
+          // After map is ready, populate pins for any already-placed waypoints (e.g. after loading a saved race)
+          setTimeout(() => {
+            map.invalidateSize();
+            waypointsRef.current.forEach((wp, wi) => {
+              if (wp.lat == null || wp.lng == null) return;
+              if (setupMapPinsRef.current[wp.id]) return;
+              const color = WP_COLORS[wi % WP_COLORS.length];
+              const makeIcon = c => L.divIcon({ className: "", html: `<div style="background:${c};width:16px;height:16px;border-radius:50%;border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.7)"></div>`, iconSize: [16,16], iconAnchor: [8,8] });
+              const marker = L.marker([wp.lat, wp.lng], { draggable: true, icon: makeIcon(color) })
+                .bindTooltip(wp.label, { permanent: true, direction: "top", offset: [0,-14], className: "leaflet-ath-label" })
+                .addTo(map);
+              marker.on("dragend", e => { const p = e.target.getLatLng(); setWaypoints(wps => wps.map(w => w.id === wp.id ? { ...w, lat: +p.lat.toFixed(6), lng: +p.lng.toFixed(6) } : w)); });
+              setupMapPinsRef.current[wp.id] = marker;
+            });
+          }, 200);
         }, []);
 
         // Saved athlete roster (persisted to localStorage — separate from race-specific athletes)
