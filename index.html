@@ -316,6 +316,9 @@
         const [dragIdx, setDragIdx] = useState(null);
         const [dragOverIdx, setDragOverIdx] = useState(null);
         const touchDragRef = useRef(null);
+        const [wpDragIdx, setWpDragIdx] = useState(null);
+        const [wpDragOverIdx, setWpDragOverIdx] = useState(null);
+        const wpTouchDragRef = useRef(null);
 
         // GPS Demo state
         const [waypoints, setWaypoints] = useState([
@@ -907,6 +910,34 @@
           applyDragDrop(touchDragRef.current.startIdx, touchDragRef.current.overIdx);
           touchDragRef.current = null;
           setDragIdx(null); setDragOverIdx(null);
+        }
+
+        function applyWpDragDrop(from, to) {
+          if (from === to) return;
+          setWaypoints(wps => { const arr = [...wps]; const [item] = arr.splice(from, 1); arr.splice(to, 0, item); return arr; });
+        }
+        function onWpDragStart(e, i) { setWpDragIdx(i); e.dataTransfer.effectAllowed = "move"; }
+        function onWpDragOver(e, i) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (i !== wpDragOverIdx) setWpDragOverIdx(i); }
+        function onWpDrop(e, i) { e.preventDefault(); if (wpDragIdx !== null) applyWpDragDrop(wpDragIdx, i); setWpDragIdx(null); setWpDragOverIdx(null); }
+        function onWpDragEnd() { setWpDragIdx(null); setWpDragOverIdx(null); }
+        function onWpTouchStart(e, i) { wpTouchDragRef.current = { startIdx: i, overIdx: i }; setWpDragIdx(i); }
+        function onWpTouchMove(e) {
+          if (!wpTouchDragRef.current) return;
+          e.preventDefault();
+          const touch = e.touches[0];
+          const el = document.elementFromPoint(touch.clientX, touch.clientY);
+          if (!el) return;
+          const row = el.closest('[data-wp-drag-idx]');
+          if (row) {
+            const idx = parseInt(row.dataset.wpDragIdx, 10);
+            if (!isNaN(idx) && idx !== wpTouchDragRef.current.overIdx) { wpTouchDragRef.current.overIdx = idx; setWpDragOverIdx(idx); }
+          }
+        }
+        function onWpTouchEnd() {
+          if (!wpTouchDragRef.current) return;
+          applyWpDragDrop(wpTouchDragRef.current.startIdx, wpTouchDragRef.current.overIdx);
+          wpTouchDragRef.current = null;
+          setWpDragIdx(null); setWpDragOverIdx(null);
         }
 
         // ── GPS Demo helpers ─────────────────────────────────────────────────────
@@ -2567,14 +2598,16 @@
 
                     {/* Waypoint cards */}
                     {waypoints.map((wp, wi) => (
-                      <div key={wp.id} style={{ background: activePlacementId === wp.id ? "rgba(255,209,102,0.06)" : "#071829", borderRadius: 6, padding: "10px 12px", marginBottom: 8, border: `1px solid ${activePlacementId === wp.id ? "rgba(255,209,102,0.5)" : "rgba(74,222,128,0.15)"}`, transition: "border-color 0.15s", display: "flex", gap: 8 }}>
-                        {/* Up/down reorder buttons */}
-                        <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0, justifyContent: "center" }}>
-                          <button onClick={() => setWaypoints(wps => { if (wi === 0) return wps; const a = [...wps]; [a[wi-1], a[wi]] = [a[wi], a[wi-1]]; return a; })} disabled={wi === 0}
-                            style={{ background: "none", border: "none", color: wi === 0 ? "#1a3a5c" : "#5a86a8", fontSize: 12, cursor: wi === 0 ? "default" : "pointer", lineHeight: 1, padding: "2px 4px" }}>▲</button>
-                          <button onClick={() => setWaypoints(wps => { if (wi === wps.length - 1) return wps; const a = [...wps]; [a[wi], a[wi+1]] = [a[wi+1], a[wi]]; return a; })} disabled={wi === waypoints.length - 1}
-                            style={{ background: "none", border: "none", color: wi === waypoints.length - 1 ? "#1a3a5c" : "#5a86a8", fontSize: 12, cursor: wi === waypoints.length - 1 ? "default" : "pointer", lineHeight: 1, padding: "2px 4px" }}>▼</button>
-                        </div>
+                      <div key={wp.id} data-wp-drag-idx={wi}
+                        onDragOver={e => onWpDragOver(e, wi)} onDrop={e => onWpDrop(e, wi)}
+                        style={{ background: activePlacementId === wp.id ? "rgba(255,209,102,0.06)" : "#071829", borderRadius: 6, padding: "10px 12px", marginBottom: 8, border: `1px solid ${activePlacementId === wp.id ? "rgba(255,209,102,0.5)" : wpDragOverIdx === wi && wpDragIdx !== wi ? "rgba(74,222,128,0.6)" : "rgba(74,222,128,0.15)"}`, transition: "border-color 0.15s", display: "flex", gap: 8, opacity: wpDragIdx === wi ? 0.4 : 1 }}>
+                        {/* Drag handle */}
+                        <div
+                          draggable
+                          onDragStart={e => onWpDragStart(e, wi)} onDragEnd={onWpDragEnd}
+                          onTouchStart={e => onWpTouchStart(e, wi)} onTouchMove={onWpTouchMove} onTouchEnd={onWpTouchEnd}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "center", cursor: "grab", color: "#3a6080", fontSize: 20, flexShrink: 0, padding: "0 3px", userSelect: "none", touchAction: "none" }}
+                          title="Drag to reorder">⠿</div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                           {wp.fixed
