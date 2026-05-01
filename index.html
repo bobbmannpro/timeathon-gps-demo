@@ -343,6 +343,7 @@
         const [joinAthIdx, setJoinAthIdx] = useState(null);
         const [joinGpsActive, setJoinGpsActive] = useState(false);
         const [joinGpsStatus, setJoinGpsStatus] = useState("");
+        const [joinGpsConsent, setJoinGpsConsent] = useState(false);
         const [joinGpsPos, setJoinGpsPos] = useState(null);
         const [joinNextSeg, setJoinNextSeg] = useState(0);
         const gpsWatchRef = useRef(null);
@@ -2028,9 +2029,19 @@
                           </div>
 
                           {!joinGpsActive ? (
-                            <button onClick={startGpsTracking} style={{ ...btnStyle("#4ade80"), width: "100%", padding: "16px", fontSize: 16, letterSpacing: 2, fontFamily: "'Bebas Neue'" }}>
-                              📍 Start GPS Tracking
-                            </button>
+                            <div>
+                              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "rgba(0,174,239,0.06)", border: "1px solid rgba(0,174,239,0.2)", borderRadius: 8, padding: "12px 14px", marginBottom: 12, cursor: "pointer" }}>
+                                <input type="checkbox" checked={joinGpsConsent} onChange={e => setJoinGpsConsent(e.target.checked)}
+                                  style={{ marginTop: 2, accentColor: "#4ade80", flexShrink: 0, width: 16, height: 16, cursor: "pointer" }} />
+                                <span style={{ fontSize: 11, color: "#8ab4cc", lineHeight: 1.5 }}>
+                                  I understand my <strong style={{ color: "#e8f4fb" }}>live GPS location</strong> will be visible to race spectators and stored in the race database for the duration of this event. I consent to this tracking.
+                                </span>
+                              </label>
+                              <button onClick={startGpsTracking} disabled={!joinGpsConsent}
+                                style={{ ...btnStyle("#4ade80"), width: "100%", padding: "16px", fontSize: 16, letterSpacing: 2, fontFamily: "'Bebas Neue'", opacity: joinGpsConsent ? 1 : 0.35, cursor: joinGpsConsent ? "pointer" : "not-allowed" }}>
+                                📍 Start GPS Tracking
+                              </button>
+                            </div>
                           ) : (
                             <div>
                               <div style={{ background: "rgba(74,222,128,0.08)", border: "2px solid #4ade80", borderRadius: 8, padding: "16px", marginBottom: 12, textAlign: "center" }}>
