@@ -328,7 +328,7 @@
         const wpTouchDragRef = useRef(null);
 
         // GPS Demo state
-        const [waypoints, setWaypoints] = useState([
+        const DEFAULT_WAYPOINTS = [
           { id: "start",   label: "Start",    lat: null, lng: null, radiusM: 30, action: "start",  fixed: true, enabled: true },
           { id: "swimOut", label: "Swim Out", lat: null, lng: null, radiusM: 30, action: "marker", fixed: true, enabled: true },
           { id: "t1",      label: "T1",       lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 0, enabled: true },
@@ -337,7 +337,8 @@
           { id: "t2",      label: "T2",       lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 2, enabled: true },
           { id: "runOut",  label: "Run Out",  lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 3, enabled: true },
           { id: "finish",  label: "Finish",   lat: null, lng: null, radiusM: 30, action: "split",  fixed: true, segIdx: 4, enabled: true },
-        ]);
+        ];
+        const [waypoints, setWaypoints] = useState(DEFAULT_WAYPOINTS);
         const [joinCode, setJoinCode] = useState("");
         const [joinRace, setJoinRace] = useState(null);
         const [joinAthIdx, setJoinAthIdx] = useState(null);
@@ -703,7 +704,15 @@
           setLoadedRaceId(race.id);
           if (race.units) setUnits(race.units);
           if (race.certConfig) setCertConfig(race.certConfig);
-          if (race.waypoints) setWaypoints(race.waypoints);
+          const loadedWaypoints = race.waypoints || DEFAULT_WAYPOINTS;
+          setWaypoints(loadedWaypoints);
+          // Re-center setup map to first placed waypoint if the map is already open
+          const firstPlaced = loadedWaypoints.find(wp => wp.lat !== null);
+          if (firstPlaced && setupMapRef.current) {
+            setupMapRef.current.setView([firstPlaced.lat, firstPlaced.lng], 15);
+          }
+          // Clear saved view so map re-centers on next open instead of restoring old position
+          if (!firstPlaced) setupMapViewRef.current = null;
           const loadedCourses = race.courses || [{ id: 1, name: "Sprint", swimYards: race.swimYards || 100, bikeMiles: race.bikeMiles || 6, runMiles: race.runMiles || 1.5 }];
           const loadedAgeGroups = race.ageGroups || DEFAULT_AGE_GROUPS;
           setCourses(loadedCourses);
@@ -1760,7 +1769,7 @@
                           <div key={race.id} style={{ background: "#0c2240", borderRadius: 6, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                             <div>
                               <div style={{ fontWeight: 700, fontSize: 13, color: "#e8f4fb" }}>{race.name}</div>
-                              <div style={{ fontSize: 11, color: "#3a6080" }}>{race.athletes.length} athletes · {(race.courses || []).map(c => c.name).join("/") || ""} · {race.savedAt}</div>
+                              <div style={{ fontSize: 11, color: "#3a6080" }}>{race.athletes.length} athletes · {(race.courses || []).map(c => c.name).join("/") || ""} · {race.savedAt}{race.waypoints && race.waypoints.some(w => w.lat !== null) ? <span style={{ color: "#4ade80", marginLeft: 4 }}>· 📍 {race.waypoints.filter(w => w.lat !== null).length} pts</span> : null}</div>
                             </div>
                             <button onClick={() => { loadRace(race); setView("setup"); setHomeSection(null); }} style={{ ...btnStyle("#ffd166"), padding: "5px 14px", fontSize: 11 }}>Load</button>
                           </div>
@@ -2753,6 +2762,7 @@
                               <div style={{ fontWeight: 700, fontSize: 13, color: "#e8f4fb", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{race.name}</div>
                               <div style={{ fontSize: 11, color: "#3a6080", marginTop: 2 }}>
                                 {race.athletes.length} athletes &nbsp;&middot;&nbsp; {(race.courses || []).map(c => c.name).join(" / ") || `${race.swimYards}y/${race.bikeMiles}mi/${race.runMiles}mi`} &nbsp;&middot;&nbsp; {race.savedAt}
+                                {race.waypoints && race.waypoints.some(w => w.lat !== null) && <span style={{ color: "#4ade80", marginLeft: 6 }}>· 📍 {race.waypoints.filter(w => w.lat !== null).length} waypoints</span>}
                               </div>
                             </div>
                             <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
