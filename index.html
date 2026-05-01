@@ -682,6 +682,7 @@
             savedAt: new Date().toLocaleDateString(),
             ageGroups, courses, units,
             certConfig,
+            waypoints,
             athletes: raceAthletes,
           };
           persistRaces([...savedRaces, entry]);
@@ -693,7 +694,7 @@
           if (!loadedRaceId) return;
           const raceAthletes = athletes.map(a => ({ name: a.name, firstName: a.firstName || "", lastName: a.lastName || "", gender: a.gender, ageGroup: a.ageGroup, dob: a.dob || "", courseId: a.courseId }));
           const updated = savedRaces.map(r => r.id === loadedRaceId
-            ? { ...r, ageGroups, courses, units, certConfig, athletes: raceAthletes, savedAt: new Date().toLocaleString() }
+            ? { ...r, ageGroups, courses, units, certConfig, waypoints, athletes: raceAthletes, savedAt: new Date().toLocaleString() }
             : r);
           persistRaces(updated);
           mergeAthletesToLibrary(athletes);
@@ -702,6 +703,7 @@
           setLoadedRaceId(race.id);
           if (race.units) setUnits(race.units);
           if (race.certConfig) setCertConfig(race.certConfig);
+          if (race.waypoints) setWaypoints(race.waypoints);
           const loadedCourses = race.courses || [{ id: 1, name: "Sprint", swimYards: race.swimYards || 100, bikeMiles: race.bikeMiles || 6, runMiles: race.runMiles || 1.5 }];
           const loadedAgeGroups = race.ageGroups || DEFAULT_AGE_GROUPS;
           setCourses(loadedCourses);
