@@ -66,6 +66,7 @@
       // Run is the final segment — logging it ends the race for that athlete
       const SEGMENTS   = ["Swim", "T1", "Bike", "T2", "Run"];
       const segColors  = ["#00aeef", "#48cae4", "#ffd166", "#48cae4", "#f4742b"];
+      const WP_COLORS  = ["#ffd166","#06d6a0","#00aeef","#f4742b","#a78bfa","#f472b6","#34d399","#fb923c","#60a5fa","#facc15"];
       const DEFAULT_AGE_GROUPS = ["8 & Under", "9-10", "11-12", "13-14", "15+"];
       // LOGO_B64 is defined in the preceding plain <script> tag (keeps Babel fast)
 
@@ -271,11 +272,15 @@
               const markerId = ath.id || idx;
               const curSeg = (ath.splits || []).findIndex(s => s === null);
               const col = segColors[curSeg === -1 ? SEGMENTS.length - 1 : curSeg] || "#00aeef";
+              const athName = ath.firstName ? `${ath.firstName} ${ath.lastName || ""}`.trim() : ath.name || `Athlete ${idx + 1}`;
+              const distLabel = ath.gps.distanceMi != null ? ` · ${ath.gps.distanceMi.toFixed(2)} mi` : "";
+              const tipText = `${athName}${distLabel}`;
               if (leafletMarkersRef.current[markerId]) {
                 leafletMarkersRef.current[markerId].setLatLng(pos);
+                leafletMarkersRef.current[markerId].setTooltipContent(tipText);
               } else {
                 leafletMarkersRef.current[markerId] = L.circleMarker(pos, { radius: 10, color: col, fillColor: col, fillOpacity: 0.8, weight: 2 })
-                  .bindTooltip(ath.firstName ? `${ath.firstName} ${ath.lastName || ""}`.trim() : ath.name || `Athlete ${idx + 1}`, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
+                  .bindTooltip(tipText, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
                   .addTo(map);
               }
             });
@@ -344,6 +349,7 @@
         const leafletMarkersRef = useRef({});
         const gpsListenerRef = useRef(null);
         const setupMapRef = useRef(null);
+        const setupMapViewRef = useRef(null);
         const setupMapPinsRef = useRef({});
         const activePlacementRef = useRef(null);
         const [activePlacementId, setActivePlacementId] = useState(null);
@@ -988,12 +994,15 @@
           setJoinGpsStatus("Acquiring GPS signal…");
           const triggered = new Set();
           let nextWpIdx = 0;
+          let prevLat = null, prevLng = null, totalDistMi = 0;
           gpsWatchRef.current = navigator.geolocation.watchPosition(pos => {
             const { latitude: lat, longitude: lng, heading, speed } = pos.coords;
+            if (prevLat !== null) { totalDistMi += haversineM(prevLat, prevLng, lat, lng) / 1609.344; }
+            prevLat = lat; prevLng = lng;
             setJoinGpsPos({ lat, lng, accuracy: pos.coords.accuracy });
-            setJoinGpsStatus(`GPS active · accuracy ±${Math.round(pos.coords.accuracy)}m`);
+            setJoinGpsStatus(`GPS active · accuracy ±${Math.round(pos.coords.accuracy)}m · ${totalDistMi.toFixed(2)} mi`);
             rtdb.ref(`liveRaces/${joinRace.code}/athletes/${joinAthIdx}/gps`)
-              .set({ lat, lng, heading, speed, t: Date.now() }).catch(console.error);
+              .set({ lat, lng, heading, speed, distanceMi: +totalDistMi.toFixed(3), t: Date.now() }).catch(console.error);
             allWps.forEach((wp, wi) => {
               if (triggered.has(wi)) return;
               if (haversineM(lat, lng, wp.lat, wp.lng) >= wp.radiusM) return;
@@ -2219,8 +2228,10 @@
                                   const markerId = ath.id || idx;
                                   const curSeg = (ath.splits || []).findIndex(s => s === null);
                                   const col = segColors[curSeg === -1 ? SEGMENTS.length - 1 : curSeg] || "#00aeef";
+                                  const athName = ath.firstName ? `${ath.firstName} ${ath.lastName || ""}`.trim() : ath.name || `Athlete ${idx + 1}`;
+                                  const distLabel = ath.gps.distanceMi != null ? ` · ${ath.gps.distanceMi.toFixed(2)} mi` : "";
                                   leafletMarkersRef.current[markerId] = L.circleMarker(pos, { radius: 10, color: col, fillColor: col, fillOpacity: 0.8, weight: 2 })
-                                    .bindTooltip(ath.name || `Athlete ${idx + 1}`, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
+                                    .bindTooltip(`${athName}${distLabel}`, { permanent: true, direction: "top", offset: [0, -10], className: "leaflet-ath-label" })
                                     .addTo(map);
                                 });
                                 leafletMapRef.current = map;
@@ -2554,13 +2565,14 @@
                       </div>
                     )}
                     <div ref={el => {
-                      if (!el) { if (setupMapRef.current) { setupMapRef.current.remove(); } setupMapRef.current = null; setupMapPinsRef.current = {}; return; }
+                      if (!el) { if (setupMapRef.current) { setupMapViewRef.current = { center: setupMapRef.current.getCenter(), zoom: setupMapRef.current.getZoom() }; setupMapRef.current.remove(); } setupMapRef.current = null; setupMapPinsRef.current = {}; return; }
                       if (setupMapRef.current) return;
                       const map = L.map(el, { zoomControl: true, attributionControl: false });
                       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-                      const firstSet = waypoints.find(wp => wp.lat !== null);
+                      if (setupMapViewRef.current) { map.setView(setupMapViewRef.current.center, setupMapViewRef.current.zoom); }
+                      else { const firstSet = waypoints.find(wp => wp.lat !== null);
                       if (firstSet) { map.setView([firstSet.lat, firstSet.lng], 15); }
-                      else { map.setView([39.5, -98.35], 4); navigator.geolocation?.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15), null, { enableHighAccuracy: false }); }
+                      else { map.setView([39.5, -98.35], 4); navigator.geolocation?.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 15), null, { enableHighAccuracy: false }); } }
                       map.on("click", e => {
                         const id = activePlacementRef.current;
                         if (!id) return;
@@ -2579,15 +2591,17 @@
                       Object.keys(setupMapPinsRef.current).forEach(id => {
                         if (!waypoints.find(wp => wp.id === id)) { setupMapPinsRef.current[id].remove(); delete setupMapPinsRef.current[id]; }
                       });
-                      waypoints.forEach(wp => {
+                      waypoints.forEach((wp, wi) => {
                         if (wp.lat === null || wp.lng === null) { if (setupMapPinsRef.current[wp.id]) { setupMapPinsRef.current[wp.id].remove(); delete setupMapPinsRef.current[wp.id]; } return; }
-                        const color = wp.action === "start" ? "#ffd166" : wp.action === "marker" ? "#8ab4cc" : "#4ade80";
+                        const color = WP_COLORS[wi % WP_COLORS.length];
+                        const makeIcon = c => L.divIcon({ className: "", html: `<div style="background:${c};width:16px;height:16px;border-radius:50%;border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.7)"></div>`, iconSize: [16,16], iconAnchor: [8,8] });
                         if (setupMapPinsRef.current[wp.id]) {
                           setupMapPinsRef.current[wp.id].setLatLng([wp.lat, wp.lng]);
+                          setupMapPinsRef.current[wp.id].setIcon(makeIcon(color));
+                          setupMapPinsRef.current[wp.id].setTooltipContent(wp.label);
                         } else {
-                          const icon = L.divIcon({ className: "", html: `<div style="background:${color};width:14px;height:14px;border-radius:50%;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.6)"></div>`, iconSize: [14,14], iconAnchor: [7,7] });
-                          const marker = L.marker([wp.lat, wp.lng], { draggable: true, icon })
-                            .bindTooltip(wp.label, { permanent: true, direction: "top", offset: [0,-12], className: "leaflet-ath-label" })
+                          const marker = L.marker([wp.lat, wp.lng], { draggable: true, icon: makeIcon(color) })
+                            .bindTooltip(wp.label, { permanent: true, direction: "top", offset: [0,-14], className: "leaflet-ath-label" })
                             .addTo(map);
                           marker.on("dragend", e => { const p = e.target.getLatLng(); setWaypoints(wps => wps.map(w => w.id === wp.id ? { ...w, lat: +p.lat.toFixed(6), lng: +p.lng.toFixed(6) } : w)); });
                           setupMapPinsRef.current[wp.id] = marker;
@@ -2597,17 +2611,22 @@
                     })()}
 
                     {/* Waypoint cards */}
-                    {waypoints.map((wp, wi) => (
+                    {waypoints.map((wp, wi) => {
+                      const wpColor = WP_COLORS[wi % WP_COLORS.length];
+                      return (
                       <div key={wp.id} data-wp-drag-idx={wi}
                         onDragOver={e => onWpDragOver(e, wi)} onDrop={e => onWpDrop(e, wi)}
-                        style={{ background: activePlacementId === wp.id ? "rgba(255,209,102,0.06)" : "#071829", borderRadius: 6, padding: "10px 12px", marginBottom: 8, border: `1px solid ${activePlacementId === wp.id ? "rgba(255,209,102,0.5)" : wpDragOverIdx === wi && wpDragIdx !== wi ? "rgba(74,222,128,0.6)" : "rgba(74,222,128,0.15)"}`, transition: "border-color 0.15s", display: "flex", gap: 8, opacity: wpDragIdx === wi ? 0.4 : 1 }}>
-                        {/* Drag handle */}
-                        <div
-                          draggable
-                          onDragStart={e => onWpDragStart(e, wi)} onDragEnd={onWpDragEnd}
-                          onTouchStart={e => onWpTouchStart(e, wi)} onTouchMove={onWpTouchMove} onTouchEnd={onWpTouchEnd}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "center", cursor: "grab", color: "#3a6080", fontSize: 20, flexShrink: 0, padding: "0 3px", userSelect: "none", touchAction: "none" }}
-                          title="Drag to reorder">⠿</div>
+                        style={{ background: activePlacementId === wp.id ? "rgba(255,209,102,0.06)" : "#071829", borderRadius: 6, padding: "10px 12px", marginBottom: 8, border: `1px solid ${activePlacementId === wp.id ? "rgba(255,209,102,0.5)" : wpDragOverIdx === wi && wpDragIdx !== wi ? "rgba(74,222,128,0.6)" : `${wpColor}44`}`, transition: "border-color 0.15s", display: "flex", gap: 8, opacity: wpDragIdx === wi ? 0.4 : 1 }}>
+                        {/* Color dot + drag handle */}
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                          <div style={{ width: 12, height: 12, borderRadius: "50%", background: wpColor, border: "2px solid white", boxShadow: `0 0 6px ${wpColor}99`, flexShrink: 0 }} />
+                          <div
+                            draggable
+                            onDragStart={e => onWpDragStart(e, wi)} onDragEnd={onWpDragEnd}
+                            onTouchStart={e => onWpTouchStart(e, wi)} onTouchMove={onWpTouchMove} onTouchEnd={onWpTouchEnd}
+                            style={{ display: "flex", alignItems: "center", justifyContent: "center", cursor: "grab", color: "#3a6080", fontSize: 20, userSelect: "none", touchAction: "none" }}
+                            title="Drag to reorder">⠿</div>
+                        </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                           {wp.fixed
@@ -2659,7 +2678,7 @@
                         </div>
                         </div>
                       </div>
-                    ))}
+                    ); })}
 
                     <button onClick={() => setWaypoints(wps => [...wps, { id: `cp_${Date.now()}`, label: "Checkpoint", lat: null, lng: null, radiusM: 30, action: "marker", fixed: false }])}
                       style={{ ...btnStyle("#5a86a8", true), width: "100%", padding: "8px", fontSize: 12, marginTop: 4 }}>
