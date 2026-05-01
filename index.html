@@ -2569,7 +2569,15 @@
 
                     {/* Waypoint cards */}
                     {waypoints.map((wp, wi) => (
-                      <div key={wp.id} style={{ background: activePlacementId === wp.id ? "rgba(255,209,102,0.06)" : "#071829", borderRadius: 6, padding: "10px 12px", marginBottom: 8, border: `1px solid ${activePlacementId === wp.id ? "rgba(255,209,102,0.5)" : "rgba(74,222,128,0.15)"}`, transition: "border-color 0.15s" }}>
+                      <div key={wp.id} style={{ background: activePlacementId === wp.id ? "rgba(255,209,102,0.06)" : "#071829", borderRadius: 6, padding: "10px 12px", marginBottom: 8, border: `1px solid ${activePlacementId === wp.id ? "rgba(255,209,102,0.5)" : "rgba(74,222,128,0.15)"}`, transition: "border-color 0.15s", display: "flex", gap: 8 }}>
+                        {/* Up/down reorder buttons */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0, justifyContent: "center" }}>
+                          <button onClick={() => setWaypoints(wps => { if (wi === 0) return wps; const a = [...wps]; [a[wi-1], a[wi]] = [a[wi], a[wi-1]]; return a; })} disabled={wi === 0}
+                            style={{ background: "none", border: "none", color: wi === 0 ? "#1a3a5c" : "#5a86a8", fontSize: 12, cursor: wi === 0 ? "default" : "pointer", lineHeight: 1, padding: "2px 4px" }}>▲</button>
+                          <button onClick={() => setWaypoints(wps => { if (wi === wps.length - 1) return wps; const a = [...wps]; [a[wi], a[wi+1]] = [a[wi+1], a[wi]]; return a; })} disabled={wi === waypoints.length - 1}
+                            style={{ background: "none", border: "none", color: wi === waypoints.length - 1 ? "#1a3a5c" : "#5a86a8", fontSize: 12, cursor: wi === waypoints.length - 1 ? "default" : "pointer", lineHeight: 1, padding: "2px 4px" }}>▼</button>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                           {wp.fixed
                             ? <div style={{ fontSize: 13, fontWeight: 700, color: "#4ade80", flex: 1 }}>{wp.label}</div>
@@ -2605,6 +2613,7 @@
                             ? <div style={{ fontSize: 10, color: "#4ade80" }}>✓ {wp.lat.toFixed(4)}, {wp.lng.toFixed(4)}</div>
                             : <div style={{ fontSize: 10, color: "#5a86a8" }}>Not placed</div>}
                           {wp.lat !== null && <button onClick={() => setWaypoints(wps => wps.map((w, i) => i === wi ? { ...w, lat: null, lng: null } : w))} style={{ background: "none", border: "none", color: "#5a86a8", fontSize: 13, cursor: "pointer" }}>&times;</button>}
+                        </div>
                         </div>
                       </div>
                     ))}
