@@ -460,6 +460,24 @@
           if (athletes.some(a => a.finished)) autoArchiveRace();
         }, [athletes]);
 
+        // Persist director's live session so it survives a refresh
+        useEffect(() => {
+          if (liveRaceCode) {
+            try { localStorage.setItem("tri-active-live", JSON.stringify({ code: liveRaceCode })); } catch(e) {}
+          } else {
+            localStorage.removeItem("tri-active-live");
+          }
+        }, [liveRaceCode]);
+
+        // Persist athlete's joined race so it survives a refresh
+        useEffect(() => {
+          if (joinRace && joinAthIdx !== null) {
+            try { localStorage.setItem("tri-active-join", JSON.stringify({ code: joinRace.code, athIdx: joinAthIdx })); } catch(e) {}
+          } else if (!joinRace) {
+            localStorage.removeItem("tri-active-join");
+          }
+        }, [joinRace, joinAthIdx]);
+
         // Firebase auth listener — loads RTDB data on login
         useEffect(() => {
           const unsub = auth.onAuthStateChanged(async user => {
@@ -505,6 +523,69 @@
                 } else {
                   try { const c = localStorage.getItem("tri-joined-races"); if (c) { const jr = JSON.parse(c); if (Object.keys(jr).length > 0) setJoinedRaces(jr); } } catch(_) {}
                 }
+
+                // Restore director's live race session after refresh
+                try {
+                  const liveRaw = localStorage.getItem("tri-active-live");
+                  if (liveRaw) {
+                    const { code } = JSON.parse(liveRaw);
+                    if (code) {
+                      const liveSnap = await rtdb.ref("liveRaces/" + code).once("value");
+                      if (liveSnap.exists()) {
+                        const ld = liveSnap.val();
+                        if (ld.status === "live" && ld.publishedBy === user.uid) {
+                          const segs = ld.segments || SEGMENTS;
+                          const restoredAthletes = (ld.athletes || []).map(a => ({
+                            ...freshAthlete(a.name, a.id, a.gender, a.ageGroup),
+                            uid: a.uid || null,
+                            startOffset: a.startOffset ?? null,
+                            splits: Array.from({ length: segs.length }, (_, i) => a.splits?.[i] ?? null),
+                            started: a.started || false,
+                            finished: a.finished || false
+                          }));
+                          setAthletes(restoredAthletes);
+                          const elapsed = ld.clockRunning ? (Date.now() - (ld.updatedAt || Date.now())) : 0;
+                          setClockMs((ld.clockMs || 0) + elapsed);
+                          setClockStarted(true);
+                          setClockRunning(ld.clockRunning || false);
+                          setLiveRaceCode(code);
+                          setView("race");
+                        } else {
+                          localStorage.removeItem("tri-active-live");
+                        }
+                      } else {
+                        localStorage.removeItem("tri-active-live");
+                      }
+                    }
+                  }
+                } catch(_) {}
+
+                // Restore athlete's joined race session after refresh
+                try {
+                  const joinRaw = localStorage.getItem("tri-active-join");
+                  if (joinRaw) {
+                    const { code, athIdx } = JSON.parse(joinRaw);
+                    if (code) {
+                      const joinSnap = await rtdb.ref("liveRaces/" + code).once("value");
+                      if (joinSnap.exists()) {
+                        const jd = joinSnap.val();
+                        const segs = jd.segments || SEGMENTS;
+                        if (jd.athletes) {
+                          jd.athletes = jd.athletes.map(a => ({
+                            ...a,
+                            splits: Array.from({ length: segs.length }, (_, i) => a.splits?.[i] ?? null)
+                          }));
+                        }
+                        setJoinRace({ ...jd, code });
+                        if (athIdx !== null && athIdx !== undefined) setJoinAthIdx(athIdx);
+                        setView("join");
+                      } else {
+                        localStorage.removeItem("tri-active-join");
+                      }
+                    }
+                  }
+                } catch(_) {}
+
               } catch(e) { console.error("RTDB load:", e); }
             }
             setAuthLoading(false);
@@ -547,6 +628,7 @@
           setSavedRaces([]); setSavedAthletes([]); setUserProfile(null); setLiveRace(null); setSpectatorCode("");
           setJoinedRaces({}); setJoinRace(null); setJoinCode("");
           setRegistrationCode(null); setRegistrationOpen(false);
+          localStorage.removeItem("tri-active-live"); localStorage.removeItem("tri-active-join");
         }
 
         function generateRaceCode() {
@@ -691,8 +773,8 @@
         function updateLiveRace(code) {
           if (!code || !currentUser) return;
           rtdb.ref("liveRaces/" + code).update({
-            clockMs,
-            athletes: athletes.map(a => ({ id: a.id, name: a.name, gender: a.gender, ageGroup: a.ageGroup, started: a.started, finished: a.finished, startOffset: a.startOffset, splits: a.splits })),
+            clockMs, clockRunning,
+            athletes: athletes.map(a => ({ id: a.id, uid: a.uid || null, name: a.name, gender: a.gender, ageGroup: a.ageGroup, started: a.started, finished: a.finished, startOffset: a.startOffset, splits: a.splits })),
             updatedAt: Date.now(),
             waypoints: waypoints.filter(wp => wp.lat !== null)
           }).catch(console.error);
@@ -2293,7 +2375,7 @@
                           <div style={{ fontFamily: "'Bebas Neue'", fontSize: 20, letterSpacing: 3, color: "#4ade80" }}>{joinRace.publisherName}'s Race</div>
                           <div style={{ fontSize: 10, color: "#5a86a8", letterSpacing: 1 }}>CODE: {joinRace.code} · {(joinRace.athletes || []).length} athletes</div>
                         </div>
-                        <button onClick={() => { setJoinRace(null); setJoinAthIdx(null); stopGpsTracking(); }} style={{ background: "none", border: "1px solid rgba(90,134,168,0.3)", borderRadius: 4, color: "#5a86a8", fontSize: 11, cursor: "pointer", padding: "5px 10px" }}>Leave</button>
+                        <button onClick={() => { setJoinRace(null); setJoinAthIdx(null); stopGpsTracking(); localStorage.removeItem("tri-active-join"); }} style={{ background: "none", border: "1px solid rgba(90,134,168,0.3)", borderRadius: 4, color: "#5a86a8", fontSize: 11, cursor: "pointer", padding: "5px 10px" }}>Leave</button>
                       </div>
 
                       {joinAthIdx === null ? (
@@ -3147,7 +3229,7 @@
                           <span style={{ fontSize: 11, color: "#5a86a8", letterSpacing: 1 }}>LIVE</span>
                           <span style={{ fontFamily: "'Bebas Neue'", fontSize: 22, color: "#ffd166", letterSpacing: 4 }}>{liveRaceCode}</span>
                           <span style={{ fontSize: 10, color: "#5a86a8" }}>share with spectators</span>
-                          <button onClick={() => { if (liveRaceUnsubRef.current) { liveRaceUnsubRef.current.ref.off("value", liveRaceUnsubRef.current.fn); liveRaceUnsubRef.current = null; } setLiveRaceCode(null); rtdb.ref("liveRaces/" + liveRaceCode).remove().catch(console.error); }}
+                          <button onClick={() => { if (liveRaceUnsubRef.current) { liveRaceUnsubRef.current.ref.off("value", liveRaceUnsubRef.current.fn); liveRaceUnsubRef.current = null; } setLiveRaceCode(null); localStorage.removeItem("tri-active-live"); rtdb.ref("liveRaces/" + liveRaceCode).remove().catch(console.error); }}
                             style={{ background: "none", border: "none", color: "#3a6080", cursor: "pointer", fontSize: 16, padding: "0 2px", lineHeight: 1 }}>&times;</button>
                         </div>
                       )}
