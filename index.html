@@ -1862,7 +1862,7 @@
                               {archiveDeleteConfirm === race.id ? (
                                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                                   <span style={{ fontSize: 11, color: "#f87171" }}>Delete?</span>
-                                  <button onClick={() => { setSavedArchive(prev => { const u = prev.filter(r => r.id !== race.id); localStorage.setItem("tri-archive", JSON.stringify(u)); if (currentUser) rtdb.ref("users/" + currentUser.uid + "/archive").set(u).catch(console.error); return u; }); setArchiveDeleteConfirm(null); }} style={{ ...btnStyle("#f87171"), padding: "3px 8px", fontSize: 11 }}>Yes</button>
+                                  <button onClick={() => { const updated = savedArchive.filter(r => r.id !== race.id); setSavedArchive(updated); try { localStorage.setItem("tri-archive", JSON.stringify(updated)); } catch(e) { console.warn("Archive persist failed:", e); } if (currentUser) rtdb.ref("users/" + currentUser.uid + "/archive").set(updated).catch(console.error); setArchiveDeleteConfirm(null); }} style={{ ...btnStyle("#f87171"), padding: "3px 8px", fontSize: 11 }}>Yes</button>
                                   <button onClick={() => setArchiveDeleteConfirm(null)} style={{ ...btnStyle("#5a86a8", true), padding: "3px 8px", fontSize: 11 }}>No</button>
                                 </div>
                               ) : (
