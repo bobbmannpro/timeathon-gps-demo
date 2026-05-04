@@ -603,13 +603,11 @@
             athletes: athletes.map(a => ({ id: a.id, name: athleteName(a) || a.name, firstName: a.firstName || "", lastName: a.lastName || "", gender: a.gender, ageGroup: a.ageGroup, splits: [...a.splits], startOffset: a.startOffset, finished: a.finished, finishMs: totalChipTime(a) })),
             finishedCount: athletes.filter(a => a.finished).length, totalCount: athletes.length,
           };
-          setSavedArchive(prev => {
-            const idx = prev.findIndex(r => r.id === sessionId);
-            const updated = idx >= 0 ? prev.map((r, i) => i === idx ? entry : r) : [...prev, entry];
-            localStorage.setItem("tri-archive", JSON.stringify(updated));
-            if (currentUser) rtdb.ref("users/" + currentUser.uid + "/archive").set(updated).catch(console.error);
-            return updated;
-          });
+          const idx = savedArchive.findIndex(r => r.id === sessionId);
+          const updated = idx >= 0 ? savedArchive.map((r, i) => i === idx ? entry : r) : [...savedArchive, entry];
+          setSavedArchive(updated);
+          try { localStorage.setItem("tri-archive", JSON.stringify(updated)); } catch(e) { console.warn("Archive persist failed:", e); }
+          if (currentUser) rtdb.ref("users/" + currentUser.uid + "/archive").set(updated).catch(console.error);
         }
 
         function archiveSegDur(ath, si) {
@@ -751,6 +749,7 @@
               courseId: a.courseId || loadedCourses[0].id
             };
           }));
+          archiveSessionRef.current = null;
           resetClock();
           setEditTarget(null);
         }
