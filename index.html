@@ -347,6 +347,19 @@
         const [joinGpsConsent, setJoinGpsConsent] = useState(false);
         const [joinGpsPos, setJoinGpsPos] = useState(null);
         const [joinNextSeg, setJoinNextSeg] = useState(0);
+
+        const [joinedRaces, setJoinedRaces] = useState({});
+        const [registrationStep, setRegistrationStep] = useState("code");
+        const [regProfile, setRegProfile] = useState({ firstName: "", lastName: "", gender: "Male", ageGroup: "", dob: "" });
+        const [regCourseId, setRegCourseId] = useState(null);
+        const [regRaceData, setRegRaceData] = useState(null);
+        const [registrationCode, setRegistrationCode] = useState(null);
+        const [registrationOpen, setRegistrationOpen] = useState(false);
+        const regListenerRef = useRef(null);
+        const [regAthleteCount, setRegAthleteCount] = useState(0);
+        const [regError, setRegError] = useState("");
+        const [regWorking, setRegWorking] = useState(false);
+
         const gpsWatchRef = useRef(null);
         const mapRef = useRef(null);
         const leafletMapRef = useRef(null);
@@ -485,6 +498,13 @@
                 } else {
                   try { const c = localStorage.getItem("tri-archive"); if (c) { const ar = JSON.parse(c); if (ar.length > 0) { setSavedArchive(ar); rtdb.ref("users/" + user.uid + "/archive").set(ar).catch(console.error); } } } catch(_) {}
                 }
+
+                // Joined races: RTDB → localStorage fallback
+                if (data.joinedRaces && Object.keys(data.joinedRaces).length > 0) {
+                  setJoinedRaces(data.joinedRaces); localStorage.setItem("tri-joined-races", JSON.stringify(data.joinedRaces));
+                } else {
+                  try { const c = localStorage.getItem("tri-joined-races"); if (c) { const jr = JSON.parse(c); if (Object.keys(jr).length > 0) setJoinedRaces(jr); } } catch(_) {}
+                }
               } catch(e) { console.error("RTDB load:", e); }
             }
             setAuthLoading(false);
@@ -522,21 +542,138 @@
         }
         function authSignOut() {
           if (liveRaceUnsubRef.current) { liveRaceUnsubRef.current.ref.off("value", liveRaceUnsubRef.current.fn); liveRaceUnsubRef.current = null; }
+          stopRegListener();
           auth.signOut();
           setSavedRaces([]); setSavedAthletes([]); setUserProfile(null); setLiveRace(null); setSpectatorCode("");
+          setJoinedRaces({}); setJoinRace(null); setJoinCode("");
+          setRegistrationCode(null); setRegistrationOpen(false);
         }
 
         function generateRaceCode() {
           return Math.random().toString(36).substring(2, 8).toUpperCase();
         }
 
-        async function publishLiveRace(code) {
+        function resolveAgeGroup(dob, groups) {
+          if (!dob || !groups || !groups.length) return null;
+          const age = calcAge(dob);
+          if (age === null) return null;
+          return groups.find(g => { const r = parseAgeRange(g); return r && age >= r.min && age <= r.max; }) || null;
+        }
+
+        function stopRegListener() {
+          if (regListenerRef.current) {
+            regListenerRef.current.ref.off("value", regListenerRef.current.fn);
+            regListenerRef.current = null;
+          }
+        }
+
+        async function openRegistration() {
+          if (!currentUser) return;
+          const code = generateRaceCode();
+          const payload = {
+            code,
+            publishedBy: currentUser.uid,
+            publisherName: userProfile?.displayName || userProfile?.firstName || currentUser.email,
+            status: "registration",
+            raceName: certConfig.eventName || "Timeathon Race",
+            courses: courses.map(c => ({ id: c.id, name: c.name, swimYards: c.swimYards, bikeMiles: c.bikeMiles, runMiles: c.runMiles })),
+            ageGroups,
+            segments: SEGMENTS,
+            waypoints: waypoints.filter(wp => wp.lat !== null),
+            updatedAt: Date.now(),
+            registrations: {}
+          };
+          try {
+            await rtdb.ref("liveRaces/" + code).set(payload);
+            setRegistrationCode(code);
+            setRegistrationOpen(true);
+            setRegAthleteCount(0);
+            const ref = rtdb.ref("liveRaces/" + code + "/registrations");
+            const fn = snap => {
+              if (!snap.exists()) { setRegAthleteCount(0); return; }
+              const regs = snap.val();
+              const entries = Object.values(regs);
+              setRegAthleteCount(entries.length);
+              setAthletes(prev => {
+                const existingUids = new Set(prev.map(a => a.uid).filter(Boolean));
+                const toAdd = entries.filter(r => !existingUids.has(r.uid)).map(r => ({
+                  ...freshAthlete(`${r.firstName} ${r.lastName}`.trim(), r.uid, r.gender, r.ageGroup),
+                  uid: r.uid,
+                  dob: r.dob || "",
+                  courseId: r.courseId || courses[0]?.id || null
+                }));
+                return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+              });
+            };
+            ref.on("value", fn, err => console.error("reg listener:", err));
+            regListenerRef.current = { ref, fn };
+          } catch(e) { console.error("openRegistration:", e); }
+        }
+
+        function closeRegistration() {
+          stopRegListener();
+          setRegistrationOpen(false);
+          if (registrationCode) rtdb.ref("liveRaces/" + registrationCode + "/status").set("closed").catch(console.error);
+        }
+
+        async function registerForRace(code, profileData, selectedCourseId) {
+          if (!currentUser) { setRegError("You must be logged in to register."); return; }
+          setRegWorking(true); setRegError("");
+          const uid = currentUser.uid;
+          const raceName = regRaceData?.raceName || "Race";
+          const hostName = regRaceData?.publisherName || "Unknown";
+          const ageGroup = resolveAgeGroup(profileData.dob, regRaceData?.ageGroups || ageGroups) || profileData.ageGroup || (regRaceData?.ageGroups?.[0] ?? ageGroups[0]);
+          const registration = {
+            uid,
+            firstName: profileData.firstName.trim(),
+            lastName: profileData.lastName.trim(),
+            name: `${profileData.firstName.trim()} ${profileData.lastName.trim()}`.trim(),
+            gender: profileData.gender,
+            ageGroup,
+            dob: profileData.dob || "",
+            courseId: selectedCourseId || regRaceData?.courses?.[0]?.id || null,
+            joinedAt: Date.now()
+          };
+          try {
+            await rtdb.ref("liveRaces/" + code + "/registrations/" + uid).set(registration);
+            const joined = { code, raceName, hostName, joinedAt: Date.now() };
+            const updatedJoined = { ...joinedRaces, [code]: joined };
+            setJoinedRaces(updatedJoined);
+            try { localStorage.setItem("tri-joined-races", JSON.stringify(updatedJoined)); } catch(e) {}
+            rtdb.ref("users/" + uid + "/joinedRaces/" + code).set(joined).catch(console.error);
+            if (regRaceData?.status === "live") {
+              await joinRaceByCode(code);
+            } else {
+              setRegistrationStep("waiting");
+            }
+          } catch(e) {
+            setRegError("Registration failed. Please try again.");
+            console.error("registerForRace:", e);
+          }
+          setRegWorking(false);
+        }
+
+        async function rejoinRace(code) {
+          const snap = await rtdb.ref("liveRaces/" + code).once("value");
+          if (!snap.exists() || snap.val()?.status === "ended") {
+            alert("This race has ended or is no longer available.");
+            return;
+          }
+          setView("join");
+          await joinRaceByCode(code);
+        }
+
+        async function publishLiveRace(codeIn) {
           if (!currentUser) return "Not logged in.";
+          const code = codeIn || generateRaceCode();
+          stopRegListener();
+          setRegistrationOpen(false);
           const payload = {
             code, publishedBy: currentUser.uid,
             publisherName: userProfile?.displayName || userProfile?.firstName || currentUser.email,
-            startedAt: Date.now(), clockMs,
-            athletes: athletes.map(a => ({ id: a.id, name: a.name, gender: a.gender, ageGroup: a.ageGroup, started: a.started, finished: a.finished, startOffset: a.startOffset, splits: a.splits })),
+            startedAt: Date.now(), clockMs, status: "live",
+            raceName: certConfig.eventName || "Race",
+            athletes: athletes.map(a => ({ id: a.id, uid: a.uid || null, name: a.name, gender: a.gender, ageGroup: a.ageGroup, started: a.started, finished: a.finished, startOffset: a.startOffset, splits: a.splits })),
             segments: SEGMENTS, updatedAt: Date.now(),
             waypoints: waypoints.filter(wp => wp.lat !== null)
           };
@@ -1030,13 +1167,15 @@
           }, () => alert("Could not get location."), { enableHighAccuracy: true });
         }
 
-        async function joinRaceByCode() {
-          if (!joinCode.trim()) return;
-          const snap = await rtdb.ref("liveRaces/" + joinCode.trim().toUpperCase()).once("value");
-          if (!snap.exists()) { alert("No active race found with that code."); return; }
+        async function joinRaceByCode(codeOverride) {
+          const code = (codeOverride || joinCode).trim().toUpperCase();
+          if (!code) return;
+          setRegError(""); setRegWorking(true);
+          const snap = await rtdb.ref("liveRaces/" + code).once("value");
+          setRegWorking(false);
+          if (!snap.exists()) { setRegError("No active race found with that code."); return; }
           const data = snap.val();
           const segs = data.segments || SEGMENTS;
-          const athCount = (data.athletes || []).length;
           if (data.athletes) {
             data.athletes = data.athletes.map(ath => ({
               ...ath,
@@ -1045,11 +1184,33 @@
               )
             }));
           }
+          if (data.status === "registration" || data.status === "closed") {
+            const raceCourses = data.courses || [];
+            const raceAgeGroups = data.ageGroups || ageGroups;
+            const prefilled = {
+              firstName: userProfile?.firstName || "",
+              lastName: userProfile?.lastName || "",
+              gender: userProfile?.gender || "Male",
+              dob: userProfile?.birthday || "",
+              ageGroup: resolveAgeGroup(userProfile?.birthday, raceAgeGroups) || raceAgeGroups[0] || ageGroups[0]
+            };
+            setRegRaceData({ ...data, code });
+            setRegProfile(prefilled);
+            setRegCourseId(raceCourses[0]?.id ?? null);
+            setRegistrationStep("confirm");
+            return;
+          }
           setJoinRace({ ...data, code: snap.key });
           setJoinAthIdx(null);
           setJoinGpsActive(false);
           setJoinNextSeg(0);
         }
+
+        useEffect(() => {
+          if (!joinRace || !currentUser || joinAthIdx !== null) return;
+          const myIdx = (joinRace.athletes || []).findIndex(a => a.uid === currentUser.uid);
+          if (myIdx >= 0) setJoinAthIdx(myIdx);
+        }, [joinRace, currentUser]);
 
         function startGpsTracking() {
           if (!navigator.geolocation) { setJoinGpsStatus("Geolocation not supported on this device."); return; }
@@ -1705,7 +1866,7 @@
 
             {/* NAV — always visible */}
             <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.08)", background: "#0c2240" }}>
-              {[["home","Home"],["setup","Setup"],["race","Race"],["results","Results"],["join","📍 Join"]].map(([v, label]) => (
+              {[["home","Home"],["setup","Setup"],["race","Race"],["results","Results"],["join","📍 Play"]].map(([v, label]) => (
                 <button key={v} onClick={() => setView(v)} style={{
                   flex: 1, padding: "11px 0", background: "none", border: "none",
                   borderBottom: view === v ? "3px solid #00aeef" : "3px solid transparent",
@@ -2010,28 +2171,122 @@
                 </div>
               )}
 
-              {/* ── JOIN RACE (GPS Demo) ── */}
+              {/* ── PLAY (GPS Demo) ── */}
               {view === "join" && (
                 <div style={{ paddingTop: 8, maxWidth: 480, margin: "0 auto" }}>
-                  <div style={{ background: "rgba(74,222,128,0.08)", border: "2px solid rgba(74,222,128,0.35)", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 3, textTransform: "uppercase", color: "#4ade80", marginBottom: 4 }}>📍 GPS Demo — Athlete Device</div>
-                    <div style={{ fontSize: 12, color: "#5a86a8", lineHeight: 1.5 }}>
-                      Open this on your phone during the race. Enter the race code, pick your name, and tap Start Tracking. Your phone's GPS will automatically log your splits as you pass each checkpoint.
-                    </div>
-                  </div>
 
-                  {!joinRace ? (
+                  {/* My Races */}
+                  {Object.keys(joinedRaces).length > 0 && registrationStep === "code" && !joinRace && (
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 3, textTransform: "uppercase", color: "#4ade80", marginBottom: 10 }}>My Races</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {Object.values(joinedRaces).sort((a, b) => (b.joinedAt || 0) - (a.joinedAt || 0)).map(jr => (
+                          <div key={jr.code} style={{ background: "#0c2240", border: "1px solid rgba(74,222,128,0.25)", borderRadius: 8, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: 14, color: "#e8f4fb" }}>{jr.raceName}</div>
+                              <div style={{ fontSize: 11, color: "#5a86a8", marginTop: 2 }}>
+                                {jr.hostName} &nbsp;·&nbsp; CODE: <span style={{ color: "#4ade80", fontFamily: "'Bebas Neue'", letterSpacing: 2 }}>{jr.code}</span>
+                              </div>
+                            </div>
+                            <button onClick={() => rejoinRace(jr.code)} style={{ ...btnStyle("#4ade80"), padding: "6px 14px", fontSize: 12, flexShrink: 0 }}>Rejoin</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Enter new code */}
+                  {registrationStep === "code" && !joinRace && (
                     <div>
                       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 2, color: "#5a86a8", marginBottom: 8 }}>RACE CODE</div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <input value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())}
+                        <input value={joinCode} onChange={e => { setJoinCode(e.target.value.toUpperCase()); setRegError(""); }}
                           onKeyDown={e => e.key === "Enter" && joinRaceByCode()}
                           placeholder="e.g. ABC123" maxLength={6}
                           style={{ flex: 1, background: "#0c2240", border: "2px solid rgba(74,222,128,0.4)", borderRadius: 8, padding: "12px 14px", color: "#4ade80", fontSize: 22, fontFamily: "'Bebas Neue'", letterSpacing: 6, outline: "none", textAlign: "center" }} />
-                        <button onClick={joinRaceByCode} style={{ ...btnStyle("#4ade80"), padding: "12px 20px", fontSize: 13 }}>Find Race</button>
+                        <button onClick={() => joinRaceByCode()} disabled={regWorking} style={{ ...btnStyle("#4ade80"), padding: "12px 20px", fontSize: 13, opacity: regWorking ? 0.6 : 1 }}>{regWorking ? "…" : "Find Race"}</button>
+                      </div>
+                      {regError && <div style={{ fontSize: 12, color: "#f87171", marginTop: 8 }}>{regError}</div>}
+                    </div>
+                  )}
+
+                  {/* Confirm your info step */}
+                  {registrationStep === "confirm" && regRaceData && !joinRace && (
+                    <div>
+                      <div style={{ background: "#0c2240", borderRadius: 8, padding: "12px 14px", marginBottom: 14 }}>
+                        <div style={{ fontFamily: "'Bebas Neue'", fontSize: 22, letterSpacing: 3, color: "#4ade80" }}>{regRaceData.raceName || "Race"}</div>
+                        <div style={{ fontSize: 10, color: "#5a86a8", letterSpacing: 1 }}>Host: {regRaceData.publisherName} &nbsp;·&nbsp; Code: {regRaceData.code}</div>
+                      </div>
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 2, color: "#5a86a8", marginBottom: 10 }}>CONFIRM YOUR INFO</div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                        <input value={regProfile.firstName} onChange={e => setRegProfile(p => ({ ...p, firstName: e.target.value }))}
+                          placeholder="First name"
+                          style={{ flex: 1, background: "#0c2240", border: "1px solid rgba(0,174,239,0.3)", borderRadius: 6, padding: "10px 12px", color: "#e8f4fb", fontSize: 14, outline: "none" }} />
+                        <input value={regProfile.lastName} onChange={e => setRegProfile(p => ({ ...p, lastName: e.target.value }))}
+                          placeholder="Last name"
+                          style={{ flex: 1, background: "#0c2240", border: "1px solid rgba(0,174,239,0.3)", borderRadius: 6, padding: "10px 12px", color: "#e8f4fb", fontSize: 14, outline: "none" }} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                        <select value={regProfile.gender} onChange={e => setRegProfile(p => ({ ...p, gender: e.target.value }))}
+                          style={{ flex: 1, background: "#0c2240", border: "1px solid rgba(0,174,239,0.25)", borderRadius: 6, padding: "10px 12px", color: "#e8f4fb", fontSize: 13, outline: "none", cursor: "pointer" }}>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                          <option value="Non-binary">Non-binary</option>
+                          <option value="Prefer not to say">Prefer not to say</option>
+                        </select>
+                        <select value={regProfile.ageGroup} onChange={e => setRegProfile(p => ({ ...p, ageGroup: e.target.value }))}
+                          style={{ flex: 1, background: "#0c2240", border: "1px solid rgba(0,174,239,0.25)", borderRadius: 6, padding: "10px 12px", color: "#e8f4fb", fontSize: 13, outline: "none", cursor: "pointer" }}>
+                          {(regRaceData.ageGroups || ageGroups).map(ag => <option key={ag} value={ag}>{ag}</option>)}
+                        </select>
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, color: "#5a86a8", marginBottom: 4 }}>Date of Birth (auto-assigns age group)</div>
+                        <input type="date" value={regProfile.dob} onChange={e => {
+                          const dob = e.target.value;
+                          const matched = resolveAgeGroup(dob, regRaceData.ageGroups || ageGroups);
+                          setRegProfile(p => ({ ...p, dob, ageGroup: matched || p.ageGroup }));
+                        }} style={{ width: "100%", background: "#0c2240", border: "1px solid rgba(0,174,239,0.25)", borderRadius: 6, padding: "10px 12px", color: "#e8f4fb", fontSize: 13, outline: "none", colorScheme: "dark", boxSizing: "border-box" }} />
+                      </div>
+                      {(regRaceData.courses || []).length > 1 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 10, color: "#5a86a8", marginBottom: 6 }}>Select Course</div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {regRaceData.courses.map(c => (
+                              <button key={c.id} onClick={() => setRegCourseId(c.id)}
+                                style={{ padding: "7px 14px", fontSize: 12, fontWeight: 700, background: regCourseId === c.id ? "#4ade80" : "transparent", color: regCourseId === c.id ? "#071829" : "#5a86a8", border: `1px solid ${regCourseId === c.id ? "#4ade80" : "rgba(74,222,128,0.3)"}`, borderRadius: 6, cursor: "pointer" }}>
+                                {c.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {regError && <div style={{ fontSize: 12, color: "#f87171", marginBottom: 8 }}>{regError}</div>}
+                      <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                        <button onClick={() => { setRegistrationStep("code"); setRegError(""); setRegRaceData(null); }}
+                          style={{ ...btnStyle("#5a86a8", true), padding: "10px 18px", fontSize: 13 }}>Back</button>
+                        <button onClick={() => registerForRace(regRaceData.code, regProfile, regCourseId)}
+                          disabled={regWorking || !regProfile.firstName.trim() || !regProfile.lastName.trim()}
+                          style={{ ...btnStyle("#4ade80"), flex: 1, padding: "12px", fontSize: 14, letterSpacing: 1, opacity: (regWorking || !regProfile.firstName.trim() || !regProfile.lastName.trim()) ? 0.5 : 1 }}>
+                          {regWorking ? "Joining…" : "Join Race"}
+                        </button>
                       </div>
                     </div>
-                  ) : (
+                  )}
+
+                  {/* Waiting for race to go live */}
+                  {registrationStep === "waiting" && !joinRace && (
+                    <div style={{ textAlign: "center", padding: "40px 0" }}>
+                      <div style={{ fontSize: 48, marginBottom: 12 }}>⏳</div>
+                      <div style={{ fontFamily: "'Bebas Neue'", fontSize: 28, letterSpacing: 4, color: "#4ade80" }}>YOU'RE IN!</div>
+                      <div style={{ fontSize: 13, color: "#5a86a8", marginTop: 8, marginBottom: 24, lineHeight: 1.5 }}>
+                        Registered for <strong style={{ color: "#e8f4fb" }}>{regRaceData?.raceName || "the race"}</strong>.<br/>Waiting for the director to start…
+                      </div>
+                      <button onClick={() => { setRegistrationStep("code"); setRegRaceData(null); }}
+                        style={{ ...btnStyle("#5a86a8", true), padding: "8px 20px", fontSize: 12 }}>Back</button>
+                    </div>
+                  )}
+
+                  {joinRace && (
                     <div>
                       <div style={{ background: "#0c2240", borderRadius: 8, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                         <div>
@@ -2451,6 +2706,37 @@
                     </div>
                   ))}
 
+                  <div style={{ marginTop: 16, background: "#0c2240", border: `2px solid ${registrationOpen ? "rgba(74,222,128,0.5)" : "rgba(0,174,239,0.2)"}`, borderRadius: 8, padding: "14px 16px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 3, textTransform: "uppercase", color: registrationOpen ? "#4ade80" : "#5a86a8" }}>
+                          {registrationOpen ? "Registration Open" : "Athlete Self-Registration"}
+                        </div>
+                        {registrationOpen && <div style={{ fontSize: 12, color: "#5a86a8", marginTop: 2 }}>{regAthleteCount} athlete{regAthleteCount !== 1 ? "s" : ""} joined</div>}
+                      </div>
+                      {!registrationOpen
+                        ? <button onClick={openRegistration} style={{ ...btnStyle("#4ade80"), padding: "6px 14px", fontSize: 12 }}>Open Registration</button>
+                        : <button onClick={closeRegistration} style={{ ...btnStyle("#f87171", true), padding: "6px 14px", fontSize: 12 }}>Close</button>
+                      }
+                    </div>
+                    {registrationOpen && (
+                      <div style={{ marginTop: 12, background: "rgba(74,222,128,0.06)", borderRadius: 6, padding: "12px 14px" }}>
+                        <div style={{ fontSize: 10, color: "#5a86a8", letterSpacing: 1, marginBottom: 4 }}>SHARE THIS CODE WITH ATHLETES</div>
+                        <div style={{ fontFamily: "'Bebas Neue'", fontSize: 40, letterSpacing: 8, color: "#4ade80" }}>{registrationCode}</div>
+                        <div style={{ fontSize: 11, color: "#5a86a8", marginTop: 2, marginBottom: 8 }}>Athletes enter this in the Play tab to join</div>
+                        {athletes.filter(a => a.uid).length > 0 && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {athletes.filter(a => a.uid).map(a => (
+                              <div key={a.uid} style={{ background: "rgba(74,222,128,0.12)", border: "1px solid rgba(74,222,128,0.3)", borderRadius: 4, padding: "3px 10px", fontSize: 12, color: "#4ade80" }}>
+                                ✓ {a.name}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
                     <button onClick={() => { setAthletePickerSearch(""); setShowAthletePicker(true); }} style={btnStyle("#48cae4", true)}>+ Add Athlete</button>
                     <button onClick={goToRace} style={btnStyle("#00aeef")}>Go to Race &#8594;</button>
@@ -2846,7 +3132,7 @@
                           <button disabled={livePublishing} onClick={async () => {
                             setLivePublishError("");
                             setLivePublishing(true);
-                            const code = generateRaceCode();
+                            const code = registrationCode || generateRaceCode();
                             const ok = await publishLiveRace(code);
                             setLivePublishing(false);
                             if (ok === true) { setLiveRaceCode(code); }
