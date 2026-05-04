@@ -460,21 +460,17 @@
           if (athletes.some(a => a.finished)) autoArchiveRace();
         }, [athletes]);
 
-        // Persist director's live session so it survives a refresh
+        // Persist director's live session — write only; explicit removal happens on stop/sign-out
         useEffect(() => {
           if (liveRaceCode) {
             try { localStorage.setItem("tri-active-live", JSON.stringify({ code: liveRaceCode })); } catch(e) {}
-          } else {
-            localStorage.removeItem("tri-active-live");
           }
         }, [liveRaceCode]);
 
-        // Persist athlete's joined race so it survives a refresh
+        // Persist athlete's joined race — write only; explicit removal happens on Leave/sign-out
         useEffect(() => {
           if (joinRace && joinAthIdx !== null) {
             try { localStorage.setItem("tri-active-join", JSON.stringify({ code: joinRace.code, athIdx: joinAthIdx })); } catch(e) {}
-          } else if (!joinRace) {
-            localStorage.removeItem("tri-active-join");
           }
         }, [joinRace, joinAthIdx]);
 
